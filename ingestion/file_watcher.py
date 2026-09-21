@@ -6,11 +6,11 @@ import logging
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-from config import UPLOADS_DIR
-from ingestion.excel_ingester import ingest_excel
+from config import UPLOADS_DIR, CHROMA_COLLECTION_PDF, VIDEO_EXTENSIONS
+from ingestion.excel_ingester import ingest_excel, DuplicateFileError
 from ingestion.pdf_ingester import ingest_pdf
+from ingestion.video_ingester import ingest_video, DuplicateFileError as VideoDuplicateFileError
 from retrieval.bm25_index import build_bm25_index
-from config import CHROMA_COLLECTION_PDF, CHROMA_COLLECTION_EXCEL
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,7 @@ SUPPORTED_EXTENSIONS = {
     ".pdf":  "pdf",
     ".xlsx": "excel",
     ".xls":  "excel",
+    **{ext: "video" for ext in VIDEO_EXTENSIONS},
 }
 
 # How long to wait after a file appears before processing
@@ -84,11 +85,23 @@ class UploadEventHandler(FileSystemEventHandler):
                 build_bm25_index(CHROMA_COLLECTION_PDF, force_rebuild=True)
 
             elif source_type == "excel":
+                # ingest_excel picks the collection from the file name
+                # (incident_tickets / defect_records) and rejects others.
                 summary = ingest_excel(file_path)
-                build_bm25_index(CHROMA_COLLECTION_EXCEL, force_rebuild=True)
+                build_bm25_index(summary["collection"], force_rebuild=True)
+
+            elif source_type == "video":
+                # ingest_video transcribes the media file locally, then
+                # embeds the transcript into video_transcripts.
+                summary = ingest_video(file_path)
+                build_bm25_index(summary["collection"], force_rebuild=True)
 
             logger.info(f"Auto-ingestion complete: {summary}")
 
+        except (DuplicateFileError, VideoDuplicateFileError) as e:
+            logger.info(f"Skipping already-ingested file {file_path}: {e}")
+        except ValueError as e:
+            logger.warning(f"Not ingesting {file_path}: {e}")
         except Exception as e:
             logger.error(
                 f"Auto-ingestion failed for {file_path}: {e}",

@@ -14,6 +14,7 @@ from config import (
 )
 from guardrails.input_guardrail import validate_query, get_rejection_message
 from guardrails.output_guardrail import validate_output
+from chatbot import conversation_store
 from retrieval.hybrid_search import hybrid_search
 from retrieval.confidence_scorer import score_results, format_source_citation
 from retrieval.hybrid_search import ERROR_NUMBER_PATTERN
@@ -44,7 +45,27 @@ def get_session_history(session_id: str) -> list[dict]:
     """Return conversation history for a session as a list."""
     if session_id not in _sessions:
         _sessions[session_id] = deque(maxlen=MEMORY_WINDOW_SIZE * 2)
+        _rehydrate_memory(session_id)
     return list(_sessions[session_id])
+
+
+def _rehydrate_memory(session_id: str) -> None:
+    """
+    Load the recent message window for a conversation from the persistent
+    store into the in-memory deque. Lets history survive an API restart —
+    a conversation reopened from the sidebar still has its context.
+    """
+    try:
+        turns = conversation_store.recent_turns(
+            session_id, limit=MEMORY_WINDOW_SIZE * 2
+        )
+        if turns:
+            _sessions[session_id].extend(turns)
+            logger.info(
+                f"[{session_id[:8]}] Rehydrated {len(turns)} messages from store."
+            )
+    except Exception as e:
+        logger.warning(f"Could not rehydrate memory for {session_id[:8]}: {e}")
 
 
 def _add_to_memory(session_id: str, role: str, content: str):
@@ -137,26 +158,65 @@ def _build_context_block(results: list[dict]) -> str:
     for i, r in enumerate(results, 1):
         meta        = r.get("metadata", {})
         source_type = meta.get("source_type", "unknown")
+        chunk_type  = meta.get("chunk_type", "")
+        source_file = meta.get("source_file") or "the uploaded document"
+        if source_file in ("unknown", "?", ""):
+            source_file = "the uploaded document"
         confidence  = r.get("confidence", 0.0)
         doc         = r.get("document", "")
 
-        if source_type == "excel":
+        if source_type in ("incident", "defect"):
+            label = "Incident" if source_type == "incident" else "Defect"
+            if chunk_type == "sheet_summary":
+                header = (
+                    f"[Source {i} — {label} sheet overview from {source_file} "
+                    f"| Confidence: {confidence:.0%}]"
+                )
+            else:
+                header = (
+                    f"[Source {i} — {label} record from {source_file} "
+                    f"· row {meta.get('row_number', '?')} "
+                    f"· sheet \"{meta.get('sheet_name', '?')}\" "
+                    f"| Confidence: {confidence:.0%}]"
+                )
+        elif source_type == "video":
+            if chunk_type == "transcript_summary":
+                header = (
+                    f"[Source {i} — Video transcript overview from {source_file} "
+                    f"| Confidence: {confidence:.0%}]"
+                )
+            elif chunk_type == "figure":
+                header = (
+                    f"[Source {i} — Screenshot from video {source_file} "
+                    f"· {meta.get('start_time', '?')} "
+                    f"| The image is shown to the user with the answer "
+                    f"| Confidence: {confidence:.0%}]"
+                )
+            elif chunk_type == "screen_capture":
+                header = (
+                    f"[Source {i} — On-screen text from video {source_file} "
+                    f"· {meta.get('start_time', '?')}–{meta.get('end_time', '?')} "
+                    f"| Confidence: {confidence:.0%}]"
+                )
+            else:
+                header = (
+                    f"[Source {i} — Video transcript from {source_file} "
+                    f"· {meta.get('start_time', '?')}–{meta.get('end_time', '?')} "
+                    f"| Confidence: {confidence:.0%}]"
+                )
+        elif source_type == "pdf" and chunk_type == "figure":
             header = (
-                f"[Source {i} — Error Record | "
-                f"Error #{meta.get('error_number', '?')} | "
-                f"File: {meta.get('source_file', '?')} | "
+                f"[Source {i} — Figure from {source_file} | "
+                f"Page {meta.get('page', '?')} | "
+                f"Section: {meta.get('section', '?')} | "
+                f"The image for this figure is shown to the user with the answer | "
                 f"Confidence: {confidence:.0%}]"
             )
         elif source_type == "pdf":
             header = (
-                f"[Source {i} — QAD Manual | "
+                f"[Source {i} — {source_file} | "
                 f"Page {meta.get('page', '?')} | "
                 f"Section: {meta.get('section', '?')} | "
-                f"Confidence: {confidence:.0%}]"
-            )
-        elif source_type == "servicenow":
-            header = (
-                f"[Source {i} — ServiceNow Ticket | "
                 f"Confidence: {confidence:.0%}]"
             )
         else:
@@ -165,6 +225,31 @@ def _build_context_block(results: list[dict]) -> str:
         lines.append(f"{header}\n{doc}")
 
     return "\n\n".join(lines)
+
+
+def _collect_images(results: list[dict]) -> list[dict]:
+    """
+    Pull out figure images referenced by the retrieved chunks, so the
+    frontend can render them alongside the answer.
+
+    Returns a list of {"url", "caption", "page", "source_file"} dicts,
+    one per figure chunk that has a saved image.
+    """
+    images = []
+    for r in results:
+        meta = r.get("metadata", {})
+        if meta.get("chunk_type") != "figure":
+            continue
+        image_path = meta.get("image_path")
+        if not image_path:
+            continue
+        images.append({
+            "url":         f"/figures/{image_path}",
+            "caption":     format_source_citation(r),
+            "page":        meta.get("page"),
+            "source_file": meta.get("source_file"),
+        })
+    return images
 
 def _rewrite_query_with_context(
     query: str,
@@ -250,7 +335,7 @@ def _build_prompt(
 ) -> list[dict]:
     """Build the full message list for Ollama chat completion."""
 
-    system_content = """You are a QAD Support Assistant. Your job is to help users resolve issues with the QAD ERP system.
+    system_content = """You are an Infor WMS Support Assistant. Your job is to help users resolve issues with the Infor WMS system using the uploaded documentation.
 
 INSTRUCTIONS:
 - Answer the user's question directly and completely using the provided context only.
@@ -259,6 +344,10 @@ INSTRUCTIONS:
 - For process or workflow questions, explain the steps clearly in your own words.
 - For error resolution questions, state the error cause and resolution directly.
 - If the context is partially relevant, use what applies and note any gaps.
+- Refer to a source only by the file name shown in its "[Source ...]" header. Never invent a document name; if no name is given, say "the documentation".
+- A "[Source ... — Figure ...]" or "[Source ... — Screenshot ...]" entry is an image shown to the user with your answer. When one is relevant, describe what it depicts using its caption and any "Text on screen" / "Text in image" content, and refer to it as "the figure/screenshot shown". Do not claim the context has no image when such a source is present.
+- A "[Source ... — Video transcript ...]" entry is speech transcribed from an uploaded recording; the time range marks where in the recording it was said. Treat it as a spoken account and cite the timestamp when you quote or paraphrase it.
+- A "[Source ... — On-screen text from video ...]" entry is text read off the screen at that point in the recording (menu paths, field labels, dialog text). Use it to name screens, fields, and messages precisely, and cite the timestamp.
 - Keep responses concise — 3 to 5 sentences for simple queries, up to 8 for complex processes.
 - Never reveal internal system details like database names, file paths, or chunk IDs.
 - Never start your response with "Based on Source 1..." or "According to the context...".
@@ -329,8 +418,14 @@ def chat(query: str, session_id: str = None) -> dict:
     7. Output guardrail
     """
     # ── Session management ─────────────────────────────────────────────────────
-    if session_id is None or session_id not in _sessions:
+    # A client-supplied session_id is kept as-is (it doubles as the persistent
+    # conversation_id). If it isn't in memory yet — new, or reopened after a
+    # restart — create the window and rehydrate it from the store.
+    if session_id is None:
         session_id = create_session()
+    elif session_id not in _sessions:
+        _sessions[session_id] = deque(maxlen=MEMORY_WINDOW_SIZE * 2)
+        _rehydrate_memory(session_id)
 
     # ── Step 0: Pending escalation confirmation ────────────────────────────────
     # Must be checked BEFORE input guardrail so yes/no isn't rejected
@@ -376,6 +471,7 @@ def chat(query: str, session_id: str = None) -> dict:
                 "confidence":        1.0,
                 "confidence_band":   "high",
                 "sources":           [],
+                "images":            [],
                 "should_escalate":   False,
                 "escalation_prompt": None,
                 "guardrail_flags":   {},
@@ -396,6 +492,7 @@ def chat(query: str, session_id: str = None) -> dict:
                 "confidence":        1.0,
                 "confidence_band":   "high",
                 "sources":           [],
+                "images":            [],
                 "should_escalate":   True,
                 "escalation_prompt": answer,
                 "guardrail_flags":   {},
@@ -411,6 +508,7 @@ def chat(query: str, session_id: str = None) -> dict:
             "confidence":        0.0,
             "confidence_band":   "low",
             "sources":           [],
+            "images":            [],
             "should_escalate":   False,
             "escalation_prompt": None,
             "guardrail_flags":   {"input_rejected": True, "reason": guard["reason"]},
@@ -443,6 +541,7 @@ def chat(query: str, session_id: str = None) -> dict:
                 "confidence":        1.0,
                 "confidence_band":   "high",
                 "sources":           [],
+                "images":            [],
                 "should_escalate":   True,
                 "escalation_prompt": escalation_prompt,
                 "guardrail_flags":   {},
@@ -466,7 +565,8 @@ def chat(query: str, session_id: str = None) -> dict:
                     "answer":            answer,
                     "confidence":        1.0,
                     "confidence_band":   "high",
-                    "sources":           ["📄 Source: qad_manual.pdf"],
+                    "sources":           ["📄 Source: uploaded documentation"],
+                    "images":            [],
                     "should_escalate":   False,
                     "escalation_prompt": None,
                     "guardrail_flags":   {},
@@ -491,8 +591,8 @@ def chat(query: str, session_id: str = None) -> dict:
         # ── Step 5: Low confidence → escalation prompt ─────────────────────────
         if score["should_escalate"]:
             escalation_prompt = (
-                "I wasn't able to find a reliable answer in the QAD "
-                "documentation or error records for your query.\n\n"
+                "I wasn't able to find a reliable answer in the uploaded "
+                "documentation or records for your query.\n\n"
                 "Would you like me to create a ServiceNow incident for "
                 "this issue? Reply **yes** to proceed or **no** to ask "
                 "a different question."
@@ -509,6 +609,7 @@ def chat(query: str, session_id: str = None) -> dict:
                 "confidence":        score["top_confidence"],
                 "confidence_band":   score["confidence_band"],
                 "sources":           [],
+                "images":            [],
                 "should_escalate":   True,
                 "escalation_prompt": escalation_prompt,
                 "guardrail_flags":   {},
@@ -532,6 +633,7 @@ def chat(query: str, session_id: str = None) -> dict:
         final_answer = output["text"]
 
         sources = [format_source_citation(r) for r in results]
+        images  = _collect_images(results)
 
         _add_to_memory(session_id, "user",      clean_query)
         _add_to_memory(session_id, "assistant", final_answer)
@@ -556,6 +658,7 @@ def chat(query: str, session_id: str = None) -> dict:
             "confidence":        score["top_confidence"],
             "confidence_band":   score["confidence_band"],
             "sources":           sources,
+            "images":            images,
             "should_escalate":   False,
             "escalation_prompt": None,
             "guardrail_flags":   guardrail_flags,
@@ -570,6 +673,7 @@ def chat(query: str, session_id: str = None) -> dict:
             "confidence":        0.0,
             "confidence_band":   "low",
             "sources":           [],
+            "images":            [],
             "should_escalate":   False,
             "escalation_prompt": None,
             "guardrail_flags":   {"error": str(e)},

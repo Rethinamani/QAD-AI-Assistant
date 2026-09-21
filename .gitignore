@@ -1,0 +1,23 @@
+# Environment / secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Generated data / vectorstore / indexes
+vectorstore/chroma_db/
+vectorstore/bm25_indexes/
+registry/*.db
+data/uploads/
+data/figures/
+data/transcripts/
+data/video_temp/
+data/nightly_drop/
+
+# Logs
+logs/
+*.log

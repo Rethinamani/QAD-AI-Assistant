@@ -13,13 +13,18 @@ from config import (
     OLLAMA_BASE_URL,
     OLLAMA_EMBED_MODEL,
     CHROMA_COLLECTION_PDF,
-    CHROMA_COLLECTION_EXCEL,
-    CHROMA_COLLECTION_SN,
+    CHROMA_COLLECTION_INCIDENTS,
+    CHROMA_COLLECTION_DEFECTS,
+    CHROMA_COLLECTION_VIDEO,
+    ALL_COLLECTIONS,
     TOP_K_DENSE,
     TOP_K_BM25,
     TOP_K_AFTER_FUSION,
     TOP_K_FINAL,
 )
+
+# Excel-backed collections — where a bare record id (row_key) is looked up.
+_EXCEL_COLLECTIONS = (CHROMA_COLLECTION_INCIDENTS, CHROMA_COLLECTION_DEFECTS)
 from vectorstore.chroma_store import chroma_store
 from retrieval.bm25_index import search_bm25, load_bm25_index
 
@@ -40,16 +45,43 @@ def _get_reranker() -> CrossEncoder:
     return _reranker
 
 
-# ── Error number detection ─────────────────────────────────────────────────────
+# ── Record-id detection ───────────────────────────────────────────────────────
+# A bare identifier token: optional letter prefix + >= 3 digits (+ trailing
+# alnum). Matches "944", "4023", "SNOW8729267", "INC0012345", "202601".
+ID_TOKEN_PATTERN = re.compile(r"\b([A-Za-z]{0,6}\d{3,}[A-Za-z0-9]*)\b")
+# Back-compat alias (chatbot.chain imports this name for follow-up rewriting).
 ERROR_NUMBER_PATTERN = re.compile(r"\b(\d{3,6})\b")
 
+# Queries that are explicitly about a picture — make sure a figure chunk with a
+# saved image survives ranking so the UI has something to show.
+FIGURE_INTENT_PATTERN = re.compile(
+    r"\b(diagrams?|figures?|flow\s?charts?|screenshots?|screen\s?shots?|charts?|"
+    r"graphics?|illustrations?|pictures?|images?|visuals?)\b",
+    re.IGNORECASE,
+)
 
-def _extract_error_number(query: str) -> str | None:
-    """
-    Check if the query contains a standalone error number (3-6 digits).
-    Returns the error number string or None.
-    """
-    match = ERROR_NUMBER_PATTERN.search(query)
+# Queries asking about the spreadsheet as a whole (counts, listings, columns) —
+# make sure the per-file sheet_summary chunk is in the results.
+AGGREGATE_INTENT_PATTERN = re.compile(
+    r"\b(how many|how much|number of|count of|total number|list all|list every|"
+    r"all the (incidents?|defects?|bugs?|rows?|records?)|what columns|"
+    r"which columns|how many (incidents?|defects?|rows?|records?))\b",
+    re.IGNORECASE,
+)
+
+# Queries about a recording as a whole ("what is the video about", "summarise
+# the recording") — make sure the transcript overview chunk is in the results.
+TRANSCRIPT_INTENT_PATTERN = re.compile(
+    r"\b(video|recording|audio|clip|transcript|transcription|"
+    r"(what|who).{0,20}(said|say|talk|speak|mention)|"
+    r"summar(y|ise|ize).{0,20}(video|recording|clip|call|meeting))\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_id_token(query: str) -> str | None:
+    """Return the first identifier-looking token in the query, or None."""
+    match = ID_TOKEN_PATTERN.search(query)
     return match.group(1) if match else None
 
 
@@ -129,7 +161,15 @@ def _enrich_bm25_with_metadata(
                 logger.debug(f"Metadata resolved via document text for id: {r['id']}")
             else:
                 logger.warning(f"Could not resolve metadata for id: {r['id']}")
-                r["metadata"] = {"source_type": "pdf", "source_file": "qad_manual.pdf"}
+                # Infer the source type from the collection rather than
+                # fabricating a document name.
+                inferred = {
+                    CHROMA_COLLECTION_PDF:       "pdf",
+                    CHROMA_COLLECTION_INCIDENTS: "incident",
+                    CHROMA_COLLECTION_DEFECTS:   "defect",
+                    CHROMA_COLLECTION_VIDEO:     "video",
+                }.get(collection_name, "unknown")
+                r["metadata"] = {"source_type": inferred, "source_file": "unknown"}
 
     except Exception as e:
         logger.warning(f"Could not enrich BM25 metadata for '{collection_name}': {e}")
@@ -137,50 +177,40 @@ def _enrich_bm25_with_metadata(
     return bm25_results
 
 def _reciprocal_rank_fusion(
-    dense_results: list[dict],
-    bm25_results:  list[dict],
+    ranked_lists: list[list[dict]],
     k: int = 60,
     top_k: int = 10,
+    per_list_cap: int = 25,
 ) -> list[dict]:
     """
-    Merge dense and BM25 results using Reciprocal Rank Fusion (RRF).
+    Fuse several independently-ranked result lists with Reciprocal Rank
+    Fusion.
 
-    RRF score = 1/(k + rank_dense) + 1/(k + rank_bm25)
-    Higher score = better combined rank.
+    Each list contributes 1/(k + rank_within_that_list) — rank is the
+    position *inside its own list*, never the position in a concatenation.
+    That is what keeps a large collection (thousands of PDF chunks) from
+    out-weighting a small one (a few dozen spreadsheet rows) purely by
+    volume: every list's #1 hit gets the same 1/(k+1).
 
-    Returns merged list sorted by RRF score, top_k items.
+    Returns the merged list sorted by fused score, top_k items.
     """
-    scores = {}  # doc_text → rrf_score
-    docs   = {}  # doc_text → result dict
+    scores: dict[str, float] = {}
+    docs:   dict[str, dict]  = {}
 
-    # Score dense results
-    for rank, result in enumerate(dense_results, start=1):
-        key = result["document"]
-        scores[key] = scores.get(key, 0) + 1 / (k + rank)
-        docs[key]   = result
+    for lst in ranked_lists:
+        for rank, result in enumerate(lst[:per_list_cap], start=1):
+            key = result["document"]
+            scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank)
+            docs.setdefault(key, result)
 
-    # Score BM25 results
-    for rank, result in enumerate(bm25_results, start=1):
-        key = result["document"]
-        scores[key] = scores.get(key, 0) + 1 / (k + rank)
-        if key not in docs:
-            docs[key] = {
-                "id":       result["id"],
-                "document": result["document"],
-                "metadata": {},
-                "source":   "bm25",
-            }
-
-    # Sort by RRF score descending
-    sorted_keys = sorted(scores, key=lambda x: scores[x], reverse=True)[:top_k]
+    ordered = sorted(scores, key=scores.get, reverse=True)[:top_k]
 
     fused = []
-    for rank, key in enumerate(sorted_keys, start=1):
+    for rank, key in enumerate(ordered, start=1):
         result = docs[key].copy()
         result["rrf_score"] = scores[key]
         result["rrf_rank"]  = rank
         fused.append(result)
-
     return fused
 
 
@@ -252,7 +282,7 @@ def hybrid_search(
 ) -> list[dict]:
     """
     Full hybrid search pipeline:
-    1. Check for exact error number → metadata filter on Excel first
+    1. Bare record id in the query → exact row_key filter on the Excel collections
     2. Dense vector search across all collections
     3. BM25 keyword search across all collections
     4. Reciprocal Rank Fusion to merge results
@@ -262,95 +292,162 @@ def hybrid_search(
     Args:
         query:       User's natural language query
         collections: List of collection names to search.
-                     Defaults to all three collections.
+                     Defaults to every collection.
 
     Returns top-ranked chunks with confidence scores.
     """
     if collections is None:
-        collections = [
-            CHROMA_COLLECTION_PDF,
-            CHROMA_COLLECTION_EXCEL,
-            CHROMA_COLLECTION_SN,
-        ]
+        collections = list(ALL_COLLECTIONS)
 
     logger.info(f"Hybrid search: '{query}'")
 
-    # ── Step 1: Exact error number pre-filter ──────────────────────────────────
-    error_number = _extract_error_number(query)
+    # ── Step 1: Exact record-id pre-filter ────────────────────────────────────
+    # If the query carries a bare id (944, SNOW8729267, INC0012345), look it
+    # up by row_key in the Excel collections so it can be pinned to the top.
+    id_token = _extract_id_token(query)
     exact_results = []
 
-    if error_number and CHROMA_COLLECTION_EXCEL in collections:
-        logger.info(f"Error number detected: {error_number} — running exact filter.")
+    if id_token:
         query_embedding = _get_query_embedding(query)
-        exact_results = _dense_search(
-            collection_name=CHROMA_COLLECTION_EXCEL,
-            query_embedding=query_embedding,
-            top_k=5,
-            where={"error_number": error_number},
-        )
-        if exact_results:
-            logger.info(f"Exact match found for error #{error_number}.")
+        for coll in _EXCEL_COLLECTIONS:
+            if coll not in collections:
+                continue
+            hits = _dense_search(
+                collection_name=coll,
+                query_embedding=query_embedding,
+                top_k=5,
+                where={"row_key": id_token},
+            )
+            if hits:
+                logger.info(f"Exact row_key match for '{id_token}' in {coll}.")
+                exact_results = hits
+                break
 
-    # ── Step 2: Dense search across all collections ───────────────────────────
+    # ── Step 2+3: Per-collection dense + BM25, each kept as its own list ──────
     query_embedding = _get_query_embedding(query)
 
-    all_dense = []
-    for collection in collections:
-        results = _dense_search(
-            collection_name=collection,
-            query_embedding=query_embedding,
-            top_k=TOP_K_DENSE,
-        )
-        all_dense.extend(results)
+    ranked_lists: list[list[dict]] = []
+    per_collection_best: list[dict] = []   # #1 hit from every list
 
-    # ── Step 3: BM25 search across all collections ────────────────────────────
-    all_bm25 = []
     for collection in collections:
+        dense = _dense_search(collection, query_embedding, top_k=TOP_K_DENSE)
+        if dense:
+            ranked_lists.append(dense)
+            per_collection_best.append(dense[0])
+
         try:
-            results = search_bm25(collection, query, top_k=TOP_K_BM25)
-            # Enrich with metadata from ChromaDB
-            results = _enrich_bm25_with_metadata(results, collection)
-            all_bm25.extend(results)
+            bm25 = _enrich_bm25_with_metadata(
+                search_bm25(collection, query, top_k=TOP_K_BM25), collection
+            )
         except FileNotFoundError:
             logger.warning(f"No BM25 index for '{collection}' — skipping.")
+            bm25 = []
+        if bm25:
+            ranked_lists.append(bm25)
+            per_collection_best.append(bm25[0])
 
-        # ── Step 4: Reciprocal Rank Fusion ────────────────────────────────────
-        fused = _reciprocal_rank_fusion(
-            dense_results=all_dense,
-            bm25_results=all_bm25,
-            top_k=TOP_K_AFTER_FUSION,
+    if not ranked_lists:
+        return []
+
+    # ── Step 4: Fuse the lists (rank is per-list, so size doesn't dominate) ──
+    fused = _reciprocal_rank_fusion(ranked_lists, top_k=TOP_K_AFTER_FUSION)
+
+    # Guarantee every collection's single best candidate reaches the reranker,
+    # so a large collection can't crowd a small one out before it is judged.
+    seen = {r["document"] for r in fused}
+    for cand in per_collection_best:
+        if cand["document"] not in seen:
+            fused.append(cand)
+            seen.add(cand["document"])
+
+    # ── Step 5: Rerank once (CrossEncoder scores query↔doc, size-agnostic) ──
+    reranked = _rerank(query, fused, top_k=TOP_K_FINAL)
+
+    # ── Step 6: Pin an exact record-id match to position 0 ───────────────────
+    if exact_results:
+        exact_doc = exact_results[0]["document"]
+        reranked = [r for r in reranked if r.get("document") != exact_doc]
+        exact_result = exact_results[0].copy()
+        exact_result["rerank_score"] = 999.0
+        reranked.insert(0, exact_result)
+        reranked = reranked[:TOP_K_FINAL]
+
+    # ── Step 6.5: Guarantee a figure result for "show me the diagram" ────────
+    if FIGURE_INTENT_PATTERN.search(query) and not any(
+        r.get("metadata", {}).get("chunk_type") == "figure" for r in reranked
+    ):
+        fig_hits = []
+        for coll in collections:
+            fig_hits.extend(_dense_search(
+                coll, query_embedding, top_k=3, where={"chunk_type": "figure"},
+            ))
+        fig_hits = [f for f in fig_hits if f.get("metadata", {}).get("image_path")]
+        if fig_hits:
+            reranker   = _get_reranker()
+            fig_scores = reranker.predict([(query, f["document"]) for f in fig_hits])
+            best = fig_hits[max(range(len(fig_scores)), key=lambda i: fig_scores[i])].copy()
+            best["rerank_score"] = float(max(fig_scores))
+            reranked = sorted(
+                reranked[: max(TOP_K_FINAL - 1, 1)] + [best],
+                key=lambda x: x.get("rerank_score", 0.0), reverse=True,
+            )
+            logger.info(
+                f"Figure-intent query — promoted figure chunk "
+                f"(page {best.get('metadata', {}).get('page', '?')})."
+            )
+
+    # ── Step 6.6: Surface the sheet overview for count / "list all" asks ─────
+    if AGGREGATE_INTENT_PATTERN.search(query) and not any(
+        r.get("metadata", {}).get("chunk_type") == "sheet_summary" for r in reranked
+    ):
+        sum_hits = []
+        for coll in _EXCEL_COLLECTIONS:
+            if coll in collections:
+                sum_hits.extend(_dense_search(
+                    coll, query_embedding, top_k=2,
+                    where={"chunk_type": "sheet_summary"},
+                ))
+        if sum_hits:
+            reranker   = _get_reranker()
+            sum_scores = reranker.predict([(query, s["document"]) for s in sum_hits])
+            best = sum_hits[max(range(len(sum_scores)), key=lambda i: sum_scores[i])].copy()
+            best["rerank_score"] = float(max(sum_scores))
+            reranked = sorted(
+                reranked[: max(TOP_K_FINAL - 1, 1)] + [best],
+                key=lambda x: x.get("rerank_score", 0.0), reverse=True,
+            )
+            logger.info("Aggregate-intent query — promoted sheet overview chunk.")
+
+    # ── Step 6.7: Surface the transcript overview for "about the video" asks ─
+    if (
+        TRANSCRIPT_INTENT_PATTERN.search(query)
+        and CHROMA_COLLECTION_VIDEO in collections
+        and not any(
+            r.get("metadata", {}).get("chunk_type") == "transcript_summary"
+            for r in reranked
         )
+    ):
+        vid_hits = _dense_search(
+            CHROMA_COLLECTION_VIDEO, query_embedding, top_k=3,
+            where={"chunk_type": "transcript_summary"},
+        )
+        if vid_hits:
+            reranker   = _get_reranker()
+            vid_scores = reranker.predict([(query, v["document"]) for v in vid_hits])
+            best = vid_hits[max(range(len(vid_scores)), key=lambda i: vid_scores[i])].copy()
+            best["rerank_score"] = float(max(vid_scores))
+            reranked = sorted(
+                reranked[: max(TOP_K_FINAL - 1, 1)] + [best],
+                key=lambda x: x.get("rerank_score", 0.0), reverse=True,
+            )
+            logger.info("Transcript-intent query — promoted transcript overview chunk.")
 
-        # ── Step 5: Rerank ────────────────────────────────────────────────────
-        reranked = _rerank(query, fused, top_k=TOP_K_FINAL)
+    # ── Step 7: Normalize confidence scores ─────────────────────────────────
+    final = _normalize_scores(reranked)
 
-        # ── Step 6: Inject exact error match at position 0 ────────────────────
-        # Do this AFTER reranking so the exact match is never dropped or demoted
-        if exact_results:
-            exact_doc = exact_results[0]["document"]
-
-            # Remove any existing occurrence of error 944 from reranked
-            reranked = [r for r in reranked if r.get("document") != exact_doc]
-
-            # Force exact match to position 0 with a fixed high rerank score
-            exact_result              = exact_results[0].copy()
-            exact_result["rerank_score"] = 999.0  # guaranteed top score
-            reranked.insert(0, exact_result)
-
-            # Trim back to TOP_K_FINAL
-            reranked = reranked[:TOP_K_FINAL]
-
-        # ── Step 7: Normalize confidence scores ───────────────────────────────
-        final = _normalize_scores(reranked)
-
-    # ── Clean up unknown sources ───────────────────────────────────────────
-    final = [
+    # Drop chunks whose source could not be identified.
+    filtered = [
         r for r in final
         if r.get("metadata", {}).get("source_type") not in (None, "", "unknown")
     ]
-
-    # If filtering removed all results, return what we have unfiltered
-    if not final:
-        final = _normalize_scores(reranked)
-
-    return final
+    return filtered or final

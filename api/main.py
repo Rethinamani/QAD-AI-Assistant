@@ -1,30 +1,47 @@
 # api/main.py
 
 import logging
+import logging.handlers
 import threading
 import shutil
 import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from config import UPLOADS_DIR
+from config import (
+    UPLOADS_DIR, LOGS_DIR, FIGURES_DIR, CHROMA_COLLECTION_PDF, VIDEO_EXTENSIONS,
+)
 from chatbot.chain import chat, create_session, get_session_history
 from chatbot.servicenow_handler import handle_escalation
+from chatbot import conversation_store
 from registry.document_registry import initialize_registry, list_all
-from retrieval.bm25_index import build_all_indexes
+from retrieval.bm25_index import build_all_indexes, build_bm25_index
 from vectorstore.chroma_store import chroma_store
 from ingestion.file_watcher import start_file_watcher
-from config import (
-    CHROMA_COLLECTION_PDF,
-    CHROMA_COLLECTION_EXCEL,
-    CHROMA_COLLECTION_SN,
-)
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+# ── Logging ────────────────────────────────────────────────────────────────────
+# File handler always writes UTF-8 so emoji/unicode in messages (video titles,
+# etc.) never crash logging regardless of the console's codepage.
+os.makedirs(LOGS_DIR, exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s]: %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.handlers.RotatingFileHandler(
+            os.path.join(LOGS_DIR, "api.log"),
+            maxBytes=10_000_000,
+            backupCount=5,
+            encoding="utf-8",
+        ),
+    ],
+)
 logger = logging.getLogger(__name__)
 
 
@@ -35,6 +52,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting QAD Support Assistant API...")
 
     initialize_registry()
+    conversation_store.initialize_conversation_store()
     build_all_indexes(force_rebuild=False)
 
     watcher_thread = threading.Thread(
@@ -64,17 +82,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Serve extracted figure images (data/figures/<doc_id>/fig_N.png) so the
+# frontend can render them directly by URL.
+os.makedirs(FIGURES_DIR, exist_ok=True)
+app.mount("/figures", StaticFiles(directory=FIGURES_DIR), name="figures")
+
 
 # ── Request size limit middleware ──────────────────────────────────────────────
 @app.middleware("http")
 async def limit_upload_size(request: Request, call_next):
-    """Reject requests larger than 100MB."""
+    """Reject oversized uploads (video files need more headroom than docs)."""
+    max_mb = 500
     if request.method == "POST" and "upload" in str(request.url):
         content_length = request.headers.get("content-length")
-        if content_length and int(content_length) > 100 * 1024 * 1024:
+        if content_length and int(content_length) > max_mb * 1024 * 1024:
             return JSONResponse(
                 status_code=413,
-                content={"detail": "File too large. Maximum size is 100MB."},
+                content={"detail": f"File too large. Maximum size is {max_mb}MB."},
             )
     return await call_next(request)
 
@@ -91,6 +115,7 @@ class ChatResponse(BaseModel):
     confidence:        float
     confidence_band:   str
     sources:           list[str]
+    images:            list[dict] = []
     should_escalate:   bool
     status:            str
 
@@ -129,6 +154,53 @@ def new_session():
     return {"session_id": session_id}
 
 
+# ── Conversation history (ChatGPT-style sidebar) ───────────────────────────────
+class RenameRequest(BaseModel):
+    title: str
+
+
+@app.get("/conversations")
+def list_conversations():
+    """All conversations, most recently updated first."""
+    return {"conversations": conversation_store.list_conversations()}
+
+
+@app.post("/conversations")
+def create_conversation():
+    """Create an empty conversation and return its id."""
+    conversation_id = conversation_store.create_conversation()
+    return {"conversation_id": conversation_id, "title": conversation_store.DEFAULT_TITLE}
+
+
+@app.get("/conversations/{conversation_id}")
+def get_conversation(conversation_id: str):
+    """Full transcript for one conversation."""
+    convo = conversation_store.get_conversation(conversation_id)
+    if not convo:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return {
+        "conversation_id": conversation_id,
+        "title":           convo["title"],
+        "messages":        conversation_store.get_messages(conversation_id),
+    }
+
+
+@app.patch("/conversations/{conversation_id}")
+def rename_conversation(conversation_id: str, request: RenameRequest):
+    """Rename a conversation."""
+    if not conversation_store.get_conversation(conversation_id):
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    conversation_store.rename_conversation(conversation_id, request.title)
+    return {"status": "ok"}
+
+
+@app.delete("/conversations/{conversation_id}")
+def delete_conversation(conversation_id: str):
+    """Delete a conversation and all its messages."""
+    conversation_store.delete_conversation(conversation_id)
+    return {"status": "ok"}
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat_endpoint(request: ChatRequest):
     """
@@ -141,12 +213,39 @@ def chat_endpoint(request: ChatRequest):
             query=request.query,
             session_id=request.session_id,
         )
+
+        conversation_id = result["session_id"]
+
+        # Persist the exchange so it shows up in the sidebar and survives
+        # restarts. Title the conversation from its first user message.
+        try:
+            is_first = conversation_store.message_count(conversation_id) == 0
+            conversation_store.append_message(
+                conversation_id, "user", request.query,
+            )
+            conversation_store.append_message(
+                conversation_id, "assistant", result["answer"],
+                confidence=result["confidence"],
+                confidence_band=result["confidence_band"],
+                sources=result["sources"],
+                images=result.get("images", []),
+                status=result["status"],
+            )
+            if is_first:
+                conversation_store.rename_conversation(
+                    conversation_id,
+                    conversation_store.auto_title_from(request.query),
+                )
+        except Exception as e:
+            logger.warning(f"Could not persist conversation {conversation_id}: {e}")
+
         return ChatResponse(
-            session_id=result["session_id"],
+            session_id=conversation_id,
             answer=result["answer"],
             confidence=result["confidence"],
             confidence_band=result["confidence_band"],
             sources=result["sources"],
+            images=result.get("images", []),
             should_escalate=result["should_escalate"],
             status=result["status"],
         )
@@ -251,7 +350,7 @@ def upload_form():
     <body>
         <div class="card">
             <h2>📄 QAD Support — Upload Document</h2>
-            <p>Supported formats: <strong>PDF, XLSX, XLS</strong></p>
+            <p>Supported formats: <strong>PDF, XLSX, XLS, MP4/MOV/MKV, MP3/WAV</strong></p>
             <p style="color:#666; font-size:13px;">
                 Duplicate files will be detected automatically.
                 New files are ingested immediately after upload.
@@ -259,7 +358,7 @@ def upload_form():
 
             <form id="uploadForm">
                 <input type="file" id="fileInput" name="file"
-                       accept=".pdf,.xlsx,.xls" required>
+                       accept=".pdf,.xlsx,.xls,.mp4,.mov,.mkv,.avi,.webm,.m4v,.mp3,.wav,.m4a,.aac,.flac,.ogg" required>
                 <div class="spinner" id="spinner">
                     ⏳ Ingesting document — this may take a few minutes
                     for large PDFs...
@@ -350,20 +449,22 @@ def upload_form():
 @app.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
     """
-    Upload a new PDF or Excel document for ingestion.
-    Checks for duplicates before saving.
-    Triggers ingestion pipeline directly and returns status.
-    """
-    allowed_extensions = {".pdf", ".xlsx", ".xls"}
-    _, ext = os.path.splitext(file.filename)
+    Upload a PDF or Excel document for ingestion.
 
-    if ext.lower() not in allowed_extensions:
+    PDF   → pdf_chunks collection.
+    Excel → collection chosen from the file name: 'incident' in the name →
+            incident_tickets, 'defect'/'bug' → defect_records, otherwise
+            the upload is rejected.
+    Audio / video → transcribed locally, transcript → video_transcripts.
+    """
+    allowed_extensions = {".pdf", ".xlsx", ".xls"} | set(VIDEO_EXTENSIONS)
+    _, ext = os.path.splitext(file.filename)
+    ext = ext.lower()
+
+    if ext not in allowed_extensions:
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"Unsupported file type '{ext}'. "
-                f"Allowed: {allowed_extensions}"
-            ),
+            detail=f"Unsupported file type '{ext}'. Allowed: {sorted(allowed_extensions)}",
         )
 
     # ── Duplicate check ────────────────────────────────────────────────────────
@@ -372,16 +473,22 @@ async def upload_document(file: UploadFile = File(...)):
     if existing and existing["status"] == "ready":
         return {
             "status":   "duplicate",
-            "message":  (
+            "message": (
                 f"File '{file.filename}' has already been ingested "
-                f"(version {existing['version']}, "
-                f"{existing['chunk_count']} chunks, "
-                f"ingested at {existing['ingested_at']}). "
-                f"Upload a file with a different name to add new content."
+                f"({existing['chunk_count']} chunks, {existing['ingested_at']}). "
+                f"Upload it under a different name to re-ingest."
             ),
             "doc_id":   existing["doc_id"],
             "filename": file.filename,
         }
+
+    # ── Excel routing check BEFORE saving ─────────────────────────────────────
+    if ext in {".xlsx", ".xls"}:
+        from ingestion.excel_ingester import resolve_excel_target
+        try:
+            resolve_excel_target(file.filename)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     # ── Save file ──────────────────────────────────────────────────────────────
     save_path = os.path.join(UPLOADS_DIR, file.filename)
@@ -390,40 +497,36 @@ async def upload_document(file: UploadFile = File(...)):
             shutil.copyfileobj(file.file, f)
         logger.info(f"File saved: {save_path}")
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to save file: {e}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
 
-    # ── Trigger ingestion ──────────────────────────────────────────────────────
+    # ── Trigger ingestion ─────────────────────────────────────────────────────
     try:
-        from ingestion.pdf_ingester import ingest_pdf
-        from ingestion.excel_ingester import ingest_excel
-        from retrieval.bm25_index import build_bm25_index
-
-        if ext.lower() == ".pdf":
+        if ext == ".pdf":
+            from ingestion.pdf_ingester import ingest_pdf
             summary = ingest_pdf(save_path)
             build_bm25_index(CHROMA_COLLECTION_PDF, force_rebuild=True)
+        elif ext in set(VIDEO_EXTENSIONS):
+            from ingestion.video_ingester import ingest_video
+            summary = ingest_video(save_path)
+            build_bm25_index(summary["collection"], force_rebuild=True)
         else:
+            from ingestion.excel_ingester import ingest_excel
             summary = ingest_excel(save_path)
-            build_bm25_index(CHROMA_COLLECTION_EXCEL, force_rebuild=True)
+            build_bm25_index(summary["collection"], force_rebuild=True)
 
         return {
             "status":      "success",
             "message":     f"File '{file.filename}' ingested successfully.",
             "filename":    file.filename,
             "doc_id":      summary["doc_id"],
-            "chunk_count": (
-                summary.get("total_chunks")
-                or summary.get("ingested")
-            ),
+            "chunk_count": summary.get("total_chunks") or summary.get("ingested"),
         }
 
     except Exception as e:
         logger.error(f"Ingestion failed for {file.filename}: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"File saved but ingestion failed: {str(e)}",
+            detail=f"File saved but ingestion failed: {e}",
         )
 
 
@@ -438,3 +541,5 @@ def list_documents(source_type: str = None):
 def collection_stats():
     """Return chunk counts for all ChromaDB collections."""
     return {"collections": chroma_store.all_stats()}
+
+

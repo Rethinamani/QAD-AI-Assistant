@@ -3,15 +3,13 @@ import chromadb
 from chromadb.config import Settings
 from config import (
     CHROMA_PERSIST_DIR,
-    CHROMA_COLLECTION_PDF,
-    CHROMA_COLLECTION_EXCEL,
-    CHROMA_COLLECTION_SN,
+    ALL_COLLECTIONS,
 )
 
 
 class ChromaStore:
     """
-    Manages all ChromaDB collections for the QAD Support Assistant.
+    Manages all ChromaDB collections for the Infor WMS Support Assistant.
     Single instance shared across the application.
     """
 
@@ -24,12 +22,8 @@ class ChromaStore:
         self._initialize_collections()
 
     def _initialize_collections(self):
-        """Create all 3 collections if they don't already exist."""
-        for name in [
-            CHROMA_COLLECTION_PDF,
-            CHROMA_COLLECTION_EXCEL,
-            CHROMA_COLLECTION_SN,
-        ]:
+        """Create every collection in ALL_COLLECTIONS if it doesn't exist."""
+        for name in ALL_COLLECTIONS:
             self._collections[name] = self.client.get_or_create_collection(
                 name=name,
                 metadata={"hnsw:space": "cosine"}
@@ -110,8 +104,17 @@ class ChromaStore:
             "count": collection.count(),
         }
 
+    def delete_by_source_file(self, collection_name: str, source_file: str) -> int:
+        """Delete every chunk whose metadata source_file matches. Returns count."""
+        collection = self.get_collection(collection_name)
+        ids = collection.get(where={"source_file": source_file}).get("ids", [])
+        if ids:
+            collection.delete(ids=ids)
+            print(f"🗑️  Deleted {len(ids)} chunks for source_file={source_file}")
+        return len(ids)
+
     def all_stats(self) -> list[dict]:
-        """Return stats for all 3 collections."""
+        """Return stats for every collection."""
         return [self.collection_stats(name) for name in self._collections]
 
 

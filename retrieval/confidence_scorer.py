@@ -76,17 +76,39 @@ def format_source_citation(result: dict) -> str:
             f"Confidence: {confidence:.0%}"
         )
 
-    elif source_type == "excel":
-        error_num = meta.get("error_number", "?")
+    elif source_type == "video":
+        chunk_type = meta.get("chunk_type")
+        if chunk_type == "transcript_summary":
+            return (
+                f"🎬 Source: {source_file} (transcript overview) | "
+                f"Confidence: {confidence:.0%}"
+            )
+        if chunk_type == "figure":
+            return (
+                f"🎬 Source: {source_file} (screenshot at {meta.get('start_time', '?')}) | "
+                f"Confidence: {confidence:.0%}"
+            )
+        span = f"{meta.get('start_time', '?')}–{meta.get('end_time', '?')}"
+        if chunk_type == "screen_capture":
+            return (
+                f"🎬 Source: {source_file} (on-screen text) | {span} | "
+                f"Confidence: {confidence:.0%}"
+            )
         return (
-            f"📊 Source: {source_file} | "
-            f"Error #{error_num} | "
+            f"🎬 Source: {source_file} | {span} | "
             f"Confidence: {confidence:.0%}"
         )
 
-    elif source_type == "servicenow":
+    elif source_type in ("incident", "defect"):
+        if meta.get("chunk_type") == "sheet_summary":
+            return (
+                f"📊 Source: {source_file} (sheet overview) | "
+                f"Confidence: {confidence:.0%}"
+            )
+        row_key = meta.get("row_key") or f"row {meta.get('row_number', '?')}"
         return (
-            f"🎫 Source: ServiceNow ticket | "
+            f"📊 Source: {source_file} | "
+            f"{row_key} | "
             f"Confidence: {confidence:.0%}"
         )
 

@@ -1,0 +1,975 @@
+<title>Infor Support Assistant Blueprint</title>
+<meta name="description" content="Technical blueprint for a fully offline, single-host RAG support assistant for Infor WMS.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --paper:        #f6f8fb;
+    --paper-raised: #ffffff;
+    --ink:          #14273d;
+    --muted:        #56697f;
+    --hair:         #d3dde8;
+    --hair-strong:  #b9c8d8;
+    --accent:       #1466c4;
+    --accent-ink:   #0d4b96;
+    --wash:         #e9f2fc;
+    --ok:           #1f7a52;
+    --warn:         #96611a;
+    --crit:         #a5342c;
+
+    --measure: 68ch;
+    --frame: 1120px;
+
+    --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:        #0b1725;
+      --paper-raised: #10233a;
+      --ink:          #dbe7f4;
+      --muted:        #93a6bc;
+      --hair:         #26384c;
+      --hair-strong:  #354a61;
+      --accent:       #4f9fe8;
+      --accent-ink:   #9ac8f2;
+      --wash:         #152f49;
+      --ok:           #5cc79a;
+      --warn:         #d6a054;
+      --crit:         #e0796f;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:        #0b1725;
+    --paper-raised: #10233a;
+    --ink:          #dbe7f4;
+    --muted:        #93a6bc;
+    --hair:         #26384c;
+    --hair-strong:  #354a61;
+    --accent:       #4f9fe8;
+    --accent-ink:   #9ac8f2;
+    --wash:         #152f49;
+    --ok:           #5cc79a;
+    --warn:         #d6a054;
+    --crit:         #e0796f;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .sheet {
+    max-width: var(--frame);
+    margin: 0 auto;
+    padding: 48px 32px 96px;
+  }
+
+  .prose { max-width: var(--measure); }
+
+  h1, h2, h3 { text-wrap: balance; line-height: 1.2; font-weight: 600; }
+
+  a { color: var(--accent-ink); text-underline-offset: 2px; }
+
+  code, .mono { font-family: var(--mono); }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent-ink);
+  }
+
+  /* ── Masthead ─────────────────────────────────────────── */
+  .masthead { border-top: 3px solid var(--accent); padding-top: 22px; }
+
+  .masthead h1 {
+    font-size: clamp(2rem, 4.6vw, 3.1rem);
+    margin: 12px 0 10px;
+    letter-spacing: -0.02em;
+  }
+
+  .masthead .lede {
+    max-width: var(--measure);
+    font-size: 1.075rem;
+    color: var(--muted);
+    margin: 0 0 28px;
+  }
+
+  /* ── Title block (drafting-sheet convention) ──────────── */
+  .titleblock {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    border: 1px solid var(--hair-strong);
+    background: var(--paper-raised);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .titleblock div {
+    padding: 10px 14px;
+    border-right: 1px solid var(--hair);
+    border-bottom: 1px solid var(--hair);
+  }
+  .titleblock dt {
+    color: var(--muted);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    font-size: 10px;
+    margin: 0 0 3px;
+  }
+  .titleblock dd { margin: 0; font-weight: 500; }
+
+  /* ── Sections ─────────────────────────────────────────── */
+  section { margin-top: 68px; }
+
+  .sec-head {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    border-bottom: 1px solid var(--hair-strong);
+    padding-bottom: 10px;
+    margin-bottom: 26px;
+  }
+  .sec-head .num {
+    font-family: var(--mono);
+    font-size: 0.95rem;
+    color: var(--accent-ink);
+    font-weight: 500;
+  }
+  .sec-head h2 { font-size: 1.5rem; margin: 0; }
+
+  p { margin: 0 0 16px; }
+  .prose + .prose { margin-top: 0; }
+
+  ul.clean { list-style: none; padding: 0; margin: 0 0 16px; max-width: var(--measure); }
+  ul.clean li {
+    position: relative;
+    padding-left: 22px;
+    margin-bottom: 10px;
+  }
+  ul.clean li::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 0.62em;
+    width: 9px; height: 9px;
+    border: 1.5px solid var(--accent);
+    background: var(--wash);
+  }
+  ul.clean li strong { font-weight: 600; }
+
+  /* ── Figure / diagram sheet ──────────────────────────── */
+  figure {
+    margin: 0 0 8px;
+    background: var(--paper-raised);
+    border: 1px solid var(--hair-strong);
+    padding: 26px 24px 18px;
+    position: relative;
+    overflow-x: auto;
+  }
+  figure::before, figure::after {
+    content: "";
+    position: absolute;
+    width: 9px; height: 9px;
+    border: 1px solid var(--hair-strong);
+  }
+  figure::before { top: 6px; left: 6px; border-right: 0; border-bottom: 0; }
+  figure::after  { bottom: 6px; right: 6px; border-left: 0; border-top: 0; }
+
+  figure svg { display: block; width: 100%; height: auto; min-width: 660px; color: var(--ink); }
+
+  figcaption {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--hair);
+    line-height: 1.55;
+  }
+  figcaption b { color: var(--ink); font-weight: 500; }
+
+  /* SVG diagram primitives */
+  .d-node { fill: var(--paper-raised); stroke: var(--ink); stroke-width: 1.5; }
+  .d-store { fill: var(--wash); stroke: var(--ink); stroke-width: 1.5; }
+  .d-ext  { fill: var(--paper); stroke: var(--muted); stroke-width: 1.5; }
+  .d-stub { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 5 4; }
+  .d-bound { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 7 5; }
+  .d-flow { stroke: var(--ink); stroke-width: 1.5; fill: none; }
+  .d-flow-soft { stroke: var(--muted); stroke-width: 1.4; fill: none; stroke-dasharray: 5 4; }
+  .d-t   { font-family: var(--mono); font-size: 13px; fill: var(--ink); }
+  .d-t-b { font-family: var(--sans); font-size: 13.5px; font-weight: 600; fill: var(--ink); }
+  .d-sub { font-family: var(--mono); font-size: 11px; fill: var(--muted); }
+  .d-lbl { font-family: var(--mono); font-size: 11px; fill: var(--muted); }
+  .d-bound-lbl { font-family: var(--mono); font-size: 11px; fill: var(--accent-ink); letter-spacing: 0.08em; }
+
+  /* ── Tables ──────────────────────────────────────────── */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--hair-strong); background: var(--paper-raised); }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 11px 16px; border-bottom: 1px solid var(--hair); vertical-align: top; }
+  th {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+    background: var(--paper);
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.mono, td .path { font-family: var(--mono); font-size: 12.5px; color: var(--accent-ink); }
+  td .path { display: block; }
+
+  .chip {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 2px 8px;
+    border: 1px solid currentColor;
+    white-space: nowrap;
+  }
+  .chip.ok   { color: var(--ok); }
+  .chip.warn { color: var(--warn); }
+  .chip.crit { color: var(--crit); }
+
+  /* ── Two-column blocks ───────────────────────────────── */
+  .cols {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 22px 32px;
+  }
+  .cols h3 { font-size: 1rem; margin: 0 0 8px; }
+  .cols .card {
+    border-left: 2px solid var(--accent);
+    padding: 2px 0 2px 16px;
+  }
+  .cols .card p { font-size: 14px; color: var(--muted); margin: 0; }
+  .cols .card p + p { margin-top: 8px; }
+
+  .stack-note {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 10px;
+    max-width: var(--measure);
+  }
+
+  dl.spec { margin: 0; }
+  dl.spec > div {
+    display: grid;
+    grid-template-columns: minmax(120px, 180px) 1fr;
+    gap: 4px 20px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--hair);
+  }
+  dl.spec dt { font-family: var(--mono); font-size: 12.5px; color: var(--accent-ink); }
+  dl.spec dd { margin: 0; font-size: 14px; }
+
+  hr.rule { border: 0; border-top: 1px solid var(--hair); margin: 34px 0; }
+
+  footer {
+    margin-top: 80px;
+    padding-top: 20px;
+    border-top: 3px solid var(--accent);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 28px;
+    justify-content: space-between;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    a { transition: color 0.15s ease; }
+  }
+
+  @media (max-width: 640px) {
+    .sheet { padding: 32px 18px 72px; }
+    dl.spec > div { grid-template-columns: 1fr; }
+  }
+
+  @media print {
+    @page { margin: 14mm; }
+    :root { --frame: 100%; }
+    body { background: #fff; font-size: 11pt; }
+    .sheet { padding: 0; max-width: 100%; }
+    a { color: var(--ink); }
+    section { margin-top: 34px; break-inside: avoid; }
+    .sec-head { break-after: avoid; }
+    figure, .table-wrap, .cols .card, dl.spec > div, tr { break-inside: avoid; }
+    figure svg { min-width: 0; }
+    .cols { gap: 14px 24px; }
+    footer { margin-top: 40px; }
+  }
+</style>
+
+<div class="sheet">
+
+  <header class="masthead">
+    <p class="eyebrow">Proof of Concept &middot; Technical Blueprint</p>
+    <h1>Infor Support Assistant</h1>
+    <p class="lede">
+      A retrieval-augmented support assistant for Infor WMS that runs entirely on one
+      machine. Operators ask questions in plain language; the assistant answers from
+      uploaded manuals, incident and defect exports, and recorded walkthroughs &mdash;
+      grounded, source-cited, and confidence-gated, with no data leaving the host.
+    </p>
+
+    <dl class="titleblock">
+      <div><dt>Project</dt><dd>Infor Support Assistant</dd></div>
+      <div><dt>Classification</dt><dd>Proof of Concept</dd></div>
+      <div><dt>Revision</dt><dd>0.1 &mdash; draft</dd></div>
+      <div><dt>Date</dt><dd>2026-09-04</dd></div>
+      <div><dt>Runtime</dt><dd>Single host / offline / CPU</dd></div>
+    </dl>
+  </header>
+
+  <!-- ── 1 ──────────────────────────────────────────────── -->
+  <section id="scope">
+    <div class="sec-head"><span class="num">&sect;1</span><h2>What this is</h2></div>
+
+    <div class="prose">
+      <p>
+        The assistant is a local <strong>RAG</strong> (retrieval-augmented generation)
+        pipeline. Documents are ingested once into a vector store; at question time the
+        system retrieves the passages most likely to answer the query, hands them to a
+        local language model as context, and returns the model's answer alongside the
+        exact sources it drew from.
+      </p>
+      <p>
+        Every moving part &mdash; the language model, the embedding model, the vector
+        store, the reranker, the PII scrubber &mdash; runs on the same host as the API.
+        There is no external API key, no cloud inference, and no outbound request in the
+        answer path. That constraint shapes every decision below.
+      </p>
+    </div>
+
+    <h3 style="font-size:1rem;margin:26px 0 12px;">Design principles</h3>
+    <ul class="clean">
+      <li><strong>Offline by construction.</strong> Ollama serves generation and
+        embeddings from <code>localhost:11434</code>; ChromaDB, BM25, the cross-encoder
+        and spaCy all run in-process. The only network dependency is a one-time model
+        download.</li>
+      <li><strong>Answer only from what was uploaded.</strong> The model is instructed to
+        use retrieved context exclusively and to name sources by their real file names.
+        A low-confidence retrieval routes to escalation rather than a guess.</li>
+      <li><strong>Guarded on both sides.</strong> Input is checked for injection and
+        abuse; output is scanned for leaked PII, internal identifiers, and fabricated
+        error numbers before it reaches the user.</li>
+      <li><strong>Confidence is explicit.</strong> Each answer carries a band &mdash;
+        high, medium, or low &mdash; derived from the reranker score of the top passage.</li>
+      <li><strong>Ingestion is hands-off.</strong> A file dropped into
+        <code>data/uploads/</code> is picked up, routed by type, cleaned, scrubbed,
+        embedded and indexed without operator action.</li>
+    </ul>
+  </section>
+
+  <!-- ── 2 ──────────────────────────────────────────────── -->
+  <section id="architecture">
+    <div class="sec-head"><span class="num">&sect;2</span><h2>System architecture</h2></div>
+
+    <figure>
+      <svg viewBox="0 0 1240 640" role="img" aria-label="Component diagram: a Streamlit chat UI calls a FastAPI orchestration service on a single offline host; the orchestrator uses a retrieval engine over ChromaDB, an Ollama model server, a SQLite registry, and a ServiceNow stub; an ingestion pipeline feeds ChromaDB from external data sources.">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0L10 5L0 10z" fill="currentColor"></path>
+          </marker>
+          <marker id="ar-soft" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0L10 5L0 10z" fill="var(--muted)"></path>
+          </marker>
+        </defs>
+
+        <!-- offline boundary -->
+        <rect class="d-bound" x="300" y="20" width="920" height="544" rx="6"></rect>
+        <text class="d-bound-lbl" x="318" y="42">SINGLE HOST &middot; RUNS OFFLINE &middot; CPU-ONLY</text>
+
+        <!-- client group -->
+        <rect class="d-stub" x="14" y="150" width="262" height="160" rx="6"></rect>
+        <text class="d-lbl" x="26" y="170">CLIENT</text>
+
+        <!-- Streamlit UI -->
+        <rect class="d-node" x="32" y="188" width="222" height="94" rx="6"></rect>
+        <text class="d-t-b" x="143" y="222" text-anchor="middle">Streamlit Chat UI</text>
+        <text class="d-sub" x="143" y="244" text-anchor="middle">conversation sidebar</text>
+        <text class="d-sub" x="143" y="260" text-anchor="middle">history &middot; sources &middot; images</text>
+
+        <!-- Orchestration -->
+        <rect class="d-node" x="330" y="186" width="236" height="120" rx="6"></rect>
+        <text class="d-t-b" x="448" y="216" text-anchor="middle">Orchestration Service</text>
+        <text class="d-sub" x="448" y="237" text-anchor="middle">FastAPI &middot; chatbot.chain</text>
+        <text class="d-sub" x="448" y="253" text-anchor="middle">guardrails &middot; session memory</text>
+        <text class="d-sub" x="448" y="269" text-anchor="middle">intent routing &middot; escalation</text>
+        <text class="d-sub" x="448" y="289" text-anchor="middle">prompt assembly</text>
+
+        <!-- Retrieval -->
+        <rect class="d-node" x="648" y="186" width="236" height="120" rx="6"></rect>
+        <text class="d-t-b" x="766" y="218" text-anchor="middle">Retrieval Engine</text>
+        <text class="d-sub" x="766" y="239" text-anchor="middle">dense + BM25 hybrid</text>
+        <text class="d-sub" x="766" y="255" text-anchor="middle">reciprocal rank fusion</text>
+        <text class="d-sub" x="766" y="271" text-anchor="middle">cross-encoder rerank</text>
+        <text class="d-sub" x="766" y="291" text-anchor="middle">confidence banding</text>
+
+        <!-- Ingestion -->
+        <rect class="d-node" x="958" y="186" width="250" height="120" rx="6"></rect>
+        <text class="d-t-b" x="1083" y="218" text-anchor="middle">Ingestion Pipeline</text>
+        <text class="d-sub" x="1083" y="239" text-anchor="middle">PDF &middot; Excel &middot; audio/video</text>
+        <text class="d-sub" x="1083" y="255" text-anchor="middle">clean &middot; chunk &middot; PII scrub</text>
+        <text class="d-sub" x="1083" y="271" text-anchor="middle">sensitivity filter</text>
+        <text class="d-sub" x="1083" y="291" text-anchor="middle">file watcher on uploads/</text>
+
+        <!-- Ollama -->
+        <rect class="d-store" x="450" y="48" width="420" height="72" rx="6"></rect>
+        <text class="d-t-b" x="660" y="78" text-anchor="middle">Local Model Server &mdash; Ollama :11434</text>
+        <text class="d-sub" x="660" y="99" text-anchor="middle">llama3.1:8b (generation) &middot; nomic-embed-text (embeddings)</text>
+
+        <!-- Vector store cylinder -->
+        <path class="d-store" d="M654 402 a112 16 0 0 1 224 0 v130 a112 16 0 0 1 -224 0 z"></path>
+        <path d="M654 402 a112 16 0 0 0 224 0" fill="none" stroke="var(--ink)" stroke-width="1.5"></path>
+        <text class="d-t-b" x="766" y="446" text-anchor="middle">Vector Store</text>
+        <text class="d-sub" x="766" y="467" text-anchor="middle">ChromaDB &middot; cosine HNSW</text>
+        <text class="d-sub" x="766" y="483" text-anchor="middle">4 collections + BM25</text>
+        <text class="d-sub" x="766" y="503" text-anchor="middle">pdf &middot; incidents &middot; defects &middot; transcripts</text>
+
+        <!-- Registry cylinder -->
+        <path class="d-store" d="M356 400 a92 14 0 0 1 184 0 v92 a92 14 0 0 1 -184 0 z"></path>
+        <path d="M356 400 a92 14 0 0 0 184 0" fill="none" stroke="var(--ink)" stroke-width="1.5"></path>
+        <text class="d-t-b" x="448" y="440" text-anchor="middle">Registry</text>
+        <text class="d-sub" x="448" y="461" text-anchor="middle">SQLite</text>
+        <text class="d-sub" x="448" y="477" text-anchor="middle">documents &middot; conversations</text>
+
+        <!-- ServiceNow stub -->
+        <rect class="d-stub" x="32" y="396" width="222" height="88" rx="6"></rect>
+        <text class="d-t-b" x="143" y="428" text-anchor="middle" fill="var(--muted)">ServiceNow incident</text>
+        <text class="d-sub" x="143" y="449" text-anchor="middle">local stub &middot; no external call</text>
+        <text class="d-sub" x="143" y="464" text-anchor="middle">returns INC-&#35;&#35;&#35;&#35;</text>
+
+        <!-- Data sources -->
+        <rect class="d-ext" x="880" y="578" width="328" height="50" rx="6"></rect>
+        <text class="d-t" x="1044" y="600" text-anchor="middle">Data Sources</text>
+        <text class="d-sub" x="1044" y="617" text-anchor="middle">manuals &middot; incident/defect exports &middot; recordings</text>
+
+        <!-- flows -->
+        <line class="d-flow" x1="254" y1="236" x2="330" y2="236" marker-start="url(#ar)" marker-end="url(#ar)"></line>
+        <text class="d-lbl" x="292" y="224" text-anchor="middle">HTTP :8000</text>
+
+        <line class="d-flow" x1="474" y1="186" x2="520" y2="120" marker-start="url(#ar)" marker-end="url(#ar)"></line>
+        <text class="d-lbl" x="452" y="150" text-anchor="end">prompt + context / answer</text>
+
+        <line class="d-flow" x1="806" y1="186" x2="822" y2="120" marker-start="url(#ar)" marker-end="url(#ar)"></line>
+        <text class="d-lbl" x="828" y="152">embed query</text>
+
+        <line class="d-flow" x1="1000" y1="186" x2="874" y2="120" marker-start="url(#ar)" marker-end="url(#ar)"></line>
+        <text class="d-lbl" x="922" y="152">embeddings</text>
+
+        <line class="d-flow" x1="566" y1="236" x2="648" y2="236" marker-end="url(#ar)"></line>
+        <text class="d-lbl" x="607" y="228" text-anchor="middle">query</text>
+        <line class="d-flow" x1="648" y1="258" x2="566" y2="258" marker-end="url(#ar)"></line>
+        <text class="d-lbl" x="607" y="273" text-anchor="middle">top 5</text>
+
+        <line class="d-flow" x1="766" y1="306" x2="766" y2="386" marker-start="url(#ar)" marker-end="url(#ar)"></line>
+        <text class="d-lbl" x="776" y="350">dense + BM25</text>
+
+        <line class="d-flow" x1="448" y1="306" x2="448" y2="386" marker-start="url(#ar)" marker-end="url(#ar)"></line>
+        <text class="d-lbl" x="458" y="350">history</text>
+
+        <path class="d-flow" d="M958 288 L900 288 L878 420" marker-end="url(#ar)"></path>
+        <text class="d-lbl" x="892" y="372">embed &rarr; upsert</text>
+
+        <path class="d-flow-soft" d="M330 300 L262 400" marker-end="url(#ar-soft)"></path>
+        <text class="d-lbl" x="252" y="356" text-anchor="end">escalate</text>
+
+        <path class="d-flow" d="M1044 578 L1083 306" marker-end="url(#ar)"></path>
+        <text class="d-lbl" x="1095" y="450">upload / watch</text>
+      </svg>
+      <figcaption>
+        <b>The answer path never leaves the host.</b> The blue dashed boundary is one
+        machine: browser &rarr; FastAPI, then the orchestrator fans out to the retrieval
+        engine, the Ollama model server, and the SQLite registry. The ingestion pipeline
+        (right) is the only component that reads external files, and it writes only to the
+        vector store and registry. The ServiceNow box is a stub &mdash; it mints a fake
+        <span class="mono">INC-&#35;&#35;&#35;&#35;</span> id and makes no outbound call.
+      </figcaption>
+    </figure>
+
+    <div class="table-wrap" style="margin-top:26px;">
+      <table>
+        <thead>
+          <tr><th>Component</th><th>Module</th><th>Responsibility</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Chat UI</td>
+            <td class="mono"><span class="path">streamlit_app.py</span></td>
+            <td>ChatGPT-style front end: conversation sidebar, message history, rendered source citations and figure images. Talks to the API over HTTP only.</td>
+          </tr>
+          <tr>
+            <td>API &amp; lifespan</td>
+            <td class="mono"><span class="path">api/main.py</span></td>
+            <td><code>/chat</code>, <code>/upload</code>, <code>/escalate</code>, <code>/conversations*</code>, <code>/documents</code>, <code>/stats</code>, <code>/health</code>. Starts the file watcher and builds BM25 indexes on boot.</td>
+          </tr>
+          <tr>
+            <td>Orchestrator</td>
+            <td class="mono"><span class="path">chatbot/chain.py</span></td>
+            <td>The RAG chain: guardrail checks, intent detection, follow-up query rewriting, hybrid search, confidence scoring, prompt assembly, LLM call, output validation.</td>
+          </tr>
+          <tr>
+            <td>Retrieval</td>
+            <td class="mono"><span class="path">retrieval/hybrid_search.py</span><span class="path">retrieval/bm25_index.py</span><span class="path">retrieval/confidence_scorer.py</span></td>
+            <td>Per-collection dense + keyword search, reciprocal rank fusion, cross-encoder rerank, exact record-id pinning, intent-driven promotion of figures / summaries / transcripts, confidence banding.</td>
+          </tr>
+          <tr>
+            <td>Vector store</td>
+            <td class="mono"><span class="path">vectorstore/chroma_store.py</span></td>
+            <td>ChromaDB <code>PersistentClient</code>, cosine HNSW, four collections. Upsert, filtered query, delete-by-source helpers.</td>
+          </tr>
+          <tr>
+            <td>Ingestion</td>
+            <td class="mono"><span class="path">ingestion/pdf_ingester.py</span><span class="path">ingestion/excel_ingester.py</span><span class="path">ingestion/video_ingester.py</span><span class="path">ingestion/file_watcher.py</span></td>
+            <td>Type-specific extraction and chunking, shared PII scrub + sensitivity filter, batched embedding, upsert, BM25 rebuild, registry updates. Auto-triggered by the watcher.</td>
+          </tr>
+          <tr>
+            <td>Security</td>
+            <td class="mono"><span class="path">security/pii_scrubber.py</span><span class="path">security/sensitivity_tagger.py</span><span class="path">guardrails/*.py</span></td>
+            <td>Presidio + spaCy PII redaction, keyword sensitivity tagging, and the input / output guardrails.</td>
+          </tr>
+          <tr>
+            <td>Registry</td>
+            <td class="mono"><span class="path">registry/document_registry.py</span><span class="path">chatbot/conversation_store.py</span></td>
+            <td>SQLite: document lifecycle (<code>doc_id</code>, filename, type, version, status, chunk count) and durable chat history that survives restarts.</td>
+          </tr>
+          <tr>
+            <td>Escalation</td>
+            <td class="mono"><span class="path">chatbot/servicenow_handler.py</span></td>
+            <td>Builds an incident payload from the conversation and returns a dummy <code>INC&lt;timestamp&gt;</code>. No integration &mdash; a placeholder for a real connector.</td>
+          </tr>
+          <tr>
+            <td>Desktop shell</td>
+            <td class="mono"><span class="path">desktop_app.py</span></td>
+            <td>Optional pywebview wrapper that packages the Streamlit UI as a native window.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── 3 ──────────────────────────────────────────────── -->
+  <section id="lifecycle">
+    <div class="sec-head"><span class="num">&sect;3</span><h2>Request lifecycle</h2></div>
+
+    <div class="prose">
+      <p>
+        A question passes through a fixed sequence of gates. Two of them &mdash; an
+        explicit escalation request and a low-confidence retrieval &mdash; can divert the
+        request away from the language model entirely.
+      </p>
+    </div>
+
+    <figure>
+      <svg viewBox="0 0 1200 400" role="img" aria-label="Flow: a user query passes through an input guardrail, an intent router, hybrid search, and confidence banding. A band at or above medium goes to the Ollama LLM, then an output guardrail, then the answer. A low band, or an explicit escalation intent, goes to an escalation prompt and then, on user confirmation, to the ServiceNow stub.">
+        <defs>
+          <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0L10 5L0 10z" fill="currentColor"></path>
+          </marker>
+        </defs>
+
+        <!-- spine -->
+        <rect class="d-node" x="24" y="52" width="150" height="66" rx="6"></rect>
+        <text class="d-t-b" x="99" y="90" text-anchor="middle">User query</text>
+
+        <rect class="d-node" x="214" y="52" width="168" height="66" rx="6"></rect>
+        <text class="d-t-b" x="298" y="80" text-anchor="middle">Input guardrail</text>
+        <text class="d-sub" x="298" y="99" text-anchor="middle">length &middot; injection &middot; abuse</text>
+
+        <rect class="d-node" x="422" y="52" width="168" height="66" rx="6"></rect>
+        <text class="d-t-b" x="506" y="80" text-anchor="middle">Intent router</text>
+        <text class="d-sub" x="506" y="99" text-anchor="middle">escalate? acronym?</text>
+
+        <rect class="d-node" x="630" y="52" width="176" height="66" rx="6"></rect>
+        <text class="d-t-b" x="718" y="80" text-anchor="middle">Hybrid search</text>
+        <text class="d-sub" x="718" y="99" text-anchor="middle">dense+BM25 &middot; RRF &middot; rerank</text>
+
+        <rect class="d-node" x="846" y="52" width="176" height="66" rx="6"></rect>
+        <text class="d-t-b" x="934" y="80" text-anchor="middle">Confidence band</text>
+        <text class="d-sub" x="934" y="99" text-anchor="middle">from top rerank score</text>
+
+        <!-- answer path -->
+        <rect class="d-node" x="630" y="212" width="176" height="66" rx="6"></rect>
+        <text class="d-t-b" x="718" y="240" text-anchor="middle">LLM answer</text>
+        <text class="d-sub" x="718" y="259" text-anchor="middle">Ollama llama3.1:8b</text>
+
+        <rect class="d-node" x="846" y="212" width="176" height="66" rx="6"></rect>
+        <text class="d-t-b" x="934" y="240" text-anchor="middle">Output guardrail</text>
+        <text class="d-sub" x="934" y="259" text-anchor="middle">PII &middot; leaks &middot; fake refs</text>
+
+        <rect class="d-store" x="1046" y="212" width="140" height="66" rx="6"></rect>
+        <text class="d-t-b" x="1116" y="240" text-anchor="middle">Answer</text>
+        <text class="d-sub" x="1116" y="259" text-anchor="middle">+ cited sources</text>
+
+        <!-- escalation path -->
+        <rect class="d-node" x="214" y="212" width="188" height="66" rx="6"></rect>
+        <text class="d-t-b" x="308" y="240" text-anchor="middle">Escalation prompt</text>
+        <text class="d-sub" x="308" y="259" text-anchor="middle">"create an incident?"</text>
+
+        <rect class="d-stub" x="214" y="322" width="188" height="60" rx="6"></rect>
+        <text class="d-t-b" x="308" y="348" text-anchor="middle" fill="var(--muted)">ServiceNow stub</text>
+        <text class="d-sub" x="308" y="366" text-anchor="middle">INC-&#35;&#35;&#35;&#35;</text>
+
+        <!-- spine arrows -->
+        <line class="d-flow" x1="174" y1="85" x2="214" y2="85" marker-end="url(#ar2)"></line>
+        <line class="d-flow" x1="382" y1="85" x2="422" y2="85" marker-end="url(#ar2)"></line>
+        <line class="d-flow" x1="590" y1="85" x2="630" y2="85" marker-end="url(#ar2)"></line>
+        <line class="d-flow" x1="806" y1="85" x2="846" y2="85" marker-end="url(#ar2)"></line>
+
+        <!-- confidence -> llm -->
+        <path class="d-flow" d="M912 118 L912 150 L718 150 L718 212" marker-end="url(#ar2)"></path>
+        <text class="d-lbl" x="726" y="143">band &ge; medium &middot; score &ge; 0.40</text>
+
+        <!-- confidence -> escalation (low) -->
+        <path class="d-flow" d="M962 118 L962 176 L308 176 L308 212" marker-end="url(#ar2)"></path>
+        <text class="d-lbl" x="404" y="169">low band &middot; score &lt; 0.40</text>
+
+        <!-- intent -> escalation -->
+        <path class="d-flow" d="M470 118 L470 192 L362 192 L362 212" marker-end="url(#ar2)"></path>
+        <text class="d-lbl" x="458" y="189" text-anchor="end">explicit "escalate"</text>
+
+        <!-- llm -> output -> answer -->
+        <line class="d-flow" x1="806" y1="245" x2="846" y2="245" marker-end="url(#ar2)"></line>
+        <line class="d-flow" x1="1022" y1="245" x2="1046" y2="245" marker-end="url(#ar2)"></line>
+
+        <!-- escalation -> stub -->
+        <line class="d-flow" x1="308" y1="278" x2="308" y2="322" marker-end="url(#ar2)"></line>
+        <text class="d-lbl" x="318" y="304">user confirms</text>
+      </svg>
+      <figcaption>
+        <b>Two exits skip the model.</b> The intent router catches an explicit
+        "escalate / raise an incident" before any retrieval runs. Otherwise the
+        confidence band on the top reranked passage decides: <span class="mono">&ge; 0.40</span>
+        goes to the LLM; <span class="mono">&lt; 0.40</span> offers escalation instead of
+        guessing. A short factual query is nudged up one band so a one-line lookup is not
+        forced to escalate.
+      </figcaption>
+    </figure>
+
+    <dl class="spec" style="margin-top:24px;">
+      <div><dt>0 &middot; pending check</dt><dd>If the previous turn offered escalation, a yes / no here is handled before anything else.</dd></div>
+      <div><dt>1 &middot; input guardrail</dt><dd>Empty, over-length (&gt; 500 chars), prompt-injection patterns, or abuse &rarr; rejected with a plain message.</dd></div>
+      <div><dt>2 &middot; intent router</dt><dd>Escalation phrasing &rarr; confirmation prompt. Acronym / "what does X stand for" &rarr; BM25 definition lookup, no LLM.</dd></div>
+      <div><dt>3 &middot; query rewrite</dt><dd>Short follow-ups are enriched with the entity or topic from the previous turn (heuristic, no model call).</dd></div>
+      <div><dt>4 &middot; hybrid search</dt><dd>Dense + BM25 per collection &rarr; RRF &rarr; cross-encoder rerank &rarr; top 5. Confidence = normalized score of rank 1.</dd></div>
+      <div><dt>5 &middot; escalation gate</dt><dd>Low band &rarr; offer to raise an incident. The original query is held for the payload.</dd></div>
+      <div><dt>6 &middot; generation</dt><dd>Context block + conversation history + banded instructions &rarr; <code>llama3.1:8b</code> at temperature 0.1.</dd></div>
+      <div><dt>7 &middot; output guardrail</dt><dd>Redact PII, strip internal identifiers, flag error numbers absent from the context, truncate to the token cap.</dd></div>
+    </dl>
+  </section>
+
+  <!-- ── 4 ──────────────────────────────────────────────── -->
+  <section id="ingestion">
+    <div class="sec-head"><span class="num">&sect;4</span><h2>Ingestion pipelines</h2></div>
+
+    <div class="prose">
+      <p>
+        Three source types share one back half. Each has its own extractor; from the
+        chunking step onward the path is identical &mdash; scrub, filter, embed, index.
+        The target collection is chosen by file type, and for spreadsheets by file name.
+      </p>
+    </div>
+
+    <figure>
+      <svg viewBox="0 0 1240 350" role="img" aria-label="Three ingestion lanes — PDF via PyMuPDF, pdfplumber and Tesseract; Excel via pandas with name-based routing; audio and video via ffmpeg and faster-whisper — merge into a shared path: normalise and chunk, PII scrub and sensitivity filter, embed via Ollama, then write to a ChromaDB collection and its BM25 index. The registry records status at the start and on completion.">
+        <defs>
+          <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0L10 5L0 10z" fill="currentColor"></path>
+          </marker>
+          <marker id="ar3-soft" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0L10 5L0 10z" fill="var(--muted)"></path>
+          </marker>
+        </defs>
+
+        <!-- lane 1 -->
+        <rect class="d-ext" x="24" y="30" width="120" height="56" rx="6"></rect>
+        <text class="d-t" x="84" y="63" text-anchor="middle">PDF</text>
+        <rect class="d-node" x="184" y="30" width="300" height="56" rx="6"></rect>
+        <text class="d-sub" x="334" y="54" text-anchor="middle">PyMuPDF &middot; pdfplumber</text>
+        <text class="d-sub" x="334" y="70" text-anchor="middle">Tesseract OCR on figures</text>
+
+        <!-- lane 2 -->
+        <rect class="d-ext" x="24" y="148" width="120" height="56" rx="6"></rect>
+        <text class="d-t" x="84" y="181" text-anchor="middle">Excel</text>
+        <rect class="d-node" x="184" y="148" width="300" height="56" rx="6"></rect>
+        <text class="d-sub" x="334" y="172" text-anchor="middle">pandas &middot; first sheet</text>
+        <text class="d-sub" x="334" y="188" text-anchor="middle">name &rarr; incidents / defects</text>
+
+        <!-- lane 3 -->
+        <rect class="d-ext" x="24" y="266" width="120" height="56" rx="6"></rect>
+        <text class="d-t" x="84" y="290" text-anchor="middle">Audio /</text>
+        <text class="d-t" x="84" y="306" text-anchor="middle">Video</text>
+        <rect class="d-node" x="184" y="266" width="300" height="56" rx="6"></rect>
+        <text class="d-sub" x="334" y="290" text-anchor="middle">ffmpeg &rarr; 16 kHz wav</text>
+        <text class="d-sub" x="334" y="306" text-anchor="middle">faster-whisper + VAD</text>
+
+        <!-- shared spine -->
+        <rect class="d-node" x="544" y="148" width="150" height="56" rx="6"></rect>
+        <text class="d-t-b" x="619" y="172" text-anchor="middle">Normalise</text>
+        <text class="d-sub" x="619" y="190" text-anchor="middle">chunk + metadata</text>
+
+        <rect class="d-node" x="730" y="148" width="166" height="56" rx="6"></rect>
+        <text class="d-t-b" x="813" y="172" text-anchor="middle">Scrub + filter</text>
+        <text class="d-sub" x="813" y="190" text-anchor="middle">Presidio &middot; drop "high"</text>
+
+        <rect class="d-node" x="932" y="148" width="120" height="56" rx="6"></rect>
+        <text class="d-t-b" x="992" y="172" text-anchor="middle">Embed</text>
+        <text class="d-sub" x="992" y="190" text-anchor="middle">Ollama</text>
+
+        <!-- Chroma cylinder -->
+        <path class="d-store" d="M1088 150 a58 12 0 0 1 116 0 v64 a58 12 0 0 1 -116 0 z"></path>
+        <path d="M1088 150 a58 12 0 0 0 116 0" fill="none" stroke="var(--ink)" stroke-width="1.5"></path>
+        <text class="d-t-b" x="1146" y="180" text-anchor="middle">Chroma</text>
+        <text class="d-sub" x="1146" y="197" text-anchor="middle">+ BM25</text>
+
+        <!-- registry -->
+        <rect class="d-stub" x="544" y="266" width="352" height="52" rx="6"></rect>
+        <text class="d-sub" x="720" y="290" text-anchor="middle">SQLite registry</text>
+        <text class="d-sub" x="720" y="306" text-anchor="middle">status: processing &rarr; ready</text>
+
+        <!-- merge arrows -->
+        <path class="d-flow" d="M484 58 L514 58 L514 164 L544 164" marker-end="url(#ar3)"></path>
+        <line class="d-flow" x1="484" y1="176" x2="544" y2="176" marker-end="url(#ar3)"></line>
+        <path class="d-flow" d="M484 294 L514 294 L514 188 L544 188" marker-end="url(#ar3)"></path>
+
+        <line class="d-flow" x1="694" y1="176" x2="730" y2="176" marker-end="url(#ar3)"></line>
+        <line class="d-flow" x1="896" y1="176" x2="932" y2="176" marker-end="url(#ar3)"></line>
+        <line class="d-flow" x1="1052" y1="176" x2="1088" y2="176" marker-end="url(#ar3)"></line>
+
+        <path class="d-flow-soft" d="M619 204 L619 266" marker-end="url(#ar3-soft)"></path>
+        <path class="d-flow-soft" d="M1146 214 L1146 292 L900 292" marker-end="url(#ar3-soft)"></path>
+      </svg>
+      <figcaption>
+        <b>One shared back half.</b> Extraction differs per type; everything after
+        <span class="mono">Normalise</span> is common code. A spreadsheet whose name
+        contains neither "incident" nor "defect" is rejected at upload, as is any file
+        whose name was ingested before. The embed step batches 128 chunks per Ollama call.
+      </figcaption>
+    </figure>
+
+    <div class="cols" style="margin-top:26px;">
+      <div class="card">
+        <h3>PDF</h3>
+        <p>Text blocks, tables (pdfplumber), and embedded raster figures. Figures are
+          detected by image size and page position &mdash; not by caption &mdash; then
+          run through Tesseract so diagram labels become searchable text. Figure images
+          are saved and served back with the answer.</p>
+      </div>
+      <div class="card">
+        <h3>Excel</h3>
+        <p>Generic single-sheet reader: first row is the header, columns are arbitrary.
+          One chunk per row plus a sheet-overview chunk for "how many" questions. Every
+          column is kept as <code>col_*</code> metadata. Routed to
+          <code>incident_tickets</code> or <code>defect_records</code> by file name.</p>
+      </div>
+      <div class="card">
+        <h3>Audio / video</h3>
+        <p>ffmpeg extracts a 16&nbsp;kHz mono track; faster-whisper ("medium" + voice
+          activity detection) transcribes it. Segments are merged into ~60-second /
+          700-character windows, each carrying its timestamp, plus one full-transcript
+          overview chunk. Sidecar <code>.srt</code> / <code>.json</code> are written too.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── 5 ──────────────────────────────────────────────── -->
+  <section id="retrieval">
+    <div class="sec-head"><span class="num">&sect;5</span><h2>Retrieval &amp; confidence</h2></div>
+
+    <div class="prose">
+      <p>
+        Retrieval runs every collection in parallel as independent ranked lists, then
+        fuses them so a large collection cannot outweigh a small one by sheer volume.
+        Fusion feeds a cross-encoder, which is the score that actually decides the answer.
+      </p>
+    </div>
+
+    <dl class="spec">
+      <div><dt>dense</dt><dd>Top 20 per collection from ChromaDB, cosine similarity on <code>nomic-embed-text</code> vectors.</dd></div>
+      <div><dt>sparse</dt><dd>Top 20 per collection from a per-collection BM25 Okapi index, rebuilt after every ingest.</dd></div>
+      <div><dt>fusion</dt><dd>Reciprocal rank fusion, <code>k = 60</code>, ranked <em>within</em> each list &mdash; every list's rank 1 contributes <code>1/(k+1)</code>. Fused to 10, plus each collection's own best candidate.</dd></div>
+      <div><dt>rerank</dt><dd><code>cross-encoder/ms-marco-MiniLM-L-6-v2</code> scores every query&ndash;passage pair; top 5 survive.</dd></div>
+      <div><dt>exact id</dt><dd>A bare record token in the query (e.g. <code>SNOW8729267</code>) is looked up by <code>row_key</code> and pinned to rank 0.</dd></div>
+      <div><dt>promotions</dt><dd>Figure-intent, aggregate-intent ("how many"), and transcript-intent queries each force their matching chunk type into the result set if absent.</dd></div>
+    </dl>
+
+    <div class="table-wrap" style="margin-top:24px;">
+      <table>
+        <thead><tr><th>Band</th><th>Score</th><th>Behaviour</th></tr></thead>
+        <tbody>
+          <tr><td><span class="chip ok">high</span></td><td class="mono">&ge; 0.75</td><td>Answer directly and completely from context.</td></tr>
+          <tr><td><span class="chip warn">medium</span></td><td class="mono">0.40 &ndash; 0.75</td><td>Answer, but instructed to extract inline detail and note gaps.</td></tr>
+          <tr><td><span class="chip crit">low</span></td><td class="mono">&lt; 0.40</td><td>No LLM call &mdash; offer to raise an incident instead.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── 6 ──────────────────────────────────────────────── -->
+  <section id="security">
+    <div class="sec-head"><span class="num">&sect;6</span><h2>Security &amp; guardrails</h2></div>
+
+    <div class="cols">
+      <div class="card">
+        <h3>Input guardrail</h3>
+        <p>Rejects empty input, queries over 500 characters, prompt-injection patterns
+          ("ignore previous instructions", "you are now&hellip;", <code>[system]</code>),
+          and abusive language &mdash; each with a specific message.</p>
+      </div>
+      <div class="card">
+        <h3>Output guardrail</h3>
+        <p>Regex-redacts email / phone / IP / SSN from the model's reply, replaces leaked
+          internal terms (<code>chromadb</code>, <code>doc_id</code>, file paths) with
+          <code>[internal]</code>, flags error numbers not present in the retrieved
+          context, and truncates to the response token cap.</p>
+      </div>
+      <div class="card">
+        <h3>PII scrub (ingest)</h3>
+        <p>Presidio + spaCy (<code>en_core_web_sm</code>, trimmed pipeline) redact
+          <span class="mono">PERSON, EMAIL_ADDRESS, PHONE_NUMBER, IP_ADDRESS, US_SSN,
+          CREDIT_CARD, IBAN_CODE</span> before anything is embedded. Runs as one batched
+          NLP pass over all chunks.</p>
+      </div>
+      <div class="card">
+        <h3>Sensitivity filter</h3>
+        <p>Keyword tagging (<span class="mono">salary, payroll, confidential, password,
+          credential&hellip;</span>). A chunk tagged "high" is dropped &mdash; never
+          embedded, never retrievable. Figure chunks are flagged as possibly containing
+          PII in the image itself.</p>
+      </div>
+    </div>
+
+    <p class="stack-note">
+      URL and LOCATION are deliberately <em>not</em> redacted: URL redaction removes
+      document links and hurts retrieval; LOCATION rarely carries real PII in ERP
+      material and is costly to detect.
+    </p>
+  </section>
+
+  <!-- ── 7 ──────────────────────────────────────────────── -->
+  <section id="stores">
+    <div class="sec-head"><span class="num">&sect;7</span><h2>Data stores</h2></div>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Collection</th><th>Fed by</th><th>Chunk types</th><th>Key metadata</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">pdf_chunks</td><td>PDF ingester</td><td>text, table, figure</td><td><span class="mono">page, section, chunk_type, image_path</span></td></tr>
+          <tr><td class="mono">incident_tickets</td><td>Excel, name contains "incident"</td><td>excel_row, sheet_summary</td><td><span class="mono">row_number, row_key, col_*</span></td></tr>
+          <tr><td class="mono">defect_records</td><td>Excel, name contains "defect" / "bug"</td><td>excel_row, sheet_summary</td><td><span class="mono">row_number, row_key, col_*</span></td></tr>
+          <tr><td class="mono">video_transcripts</td><td>Audio / video ingester</td><td>transcript_segment, transcript_summary</td><td><span class="mono">start_sec, end_sec, start_time, segment_index</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <dl class="spec" style="margin-top:22px;">
+      <div><dt>Vector index</dt><dd>ChromaDB <code>PersistentClient</code> at <code>vectorstore/chroma_db/</code>, cosine HNSW. Every collection also has a pickled BM25 index under <code>vectorstore/bm25_indexes/</code>.</dd></div>
+      <div><dt>document_registry.db</dt><dd>One row per ingested file: <code>doc_id</code>, filename, source type, version, status, chunk count, timestamp. Drives duplicate-name rejection.</dd></div>
+      <div><dt>conversations.db</dt><dd>Conversations and messages with confidence, sources and images. The chat window is rehydrated from here after a restart.</dd></div>
+      <div><dt>data/ layout</dt><dd><code>uploads/</code> (watched), <code>figures/</code> (served), <code>transcripts/</code> (sidecars). Nothing here is authoritative &mdash; the vector store and registry are.</dd></div>
+    </dl>
+  </section>
+
+  <!-- ── 8 ──────────────────────────────────────────────── -->
+  <section id="stack">
+    <div class="sec-head"><span class="num">&sect;8</span><h2>Technology stack</h2></div>
+
+    <div class="cols">
+      <div class="card">
+        <h3>Models (local)</h3>
+        <p>Ollama &mdash; <code>llama3.1:8b</code>, <code>nomic-embed-text</code> (768-dim).
+          <code>sentence-transformers 4.1</code> cross-encoder. spaCy
+          <code>en_core_web_sm 3.8</code>. faster-whisper <code>1.1</code>.</p>
+      </div>
+      <div class="card">
+        <h3>Retrieval &amp; store</h3>
+        <p><code>chromadb</code>, <code>rank-bm25 0.2.2</code>. Orchestration glue from
+          <code>langchain 0.3.25</code> / <code>langchain-community</code> /
+          <code>langchain-ollama</code>.</p>
+      </div>
+      <div class="card">
+        <h3>Ingestion</h3>
+        <p><code>pymupdf 1.25.5</code>, <code>pdfplumber 0.11.6</code>,
+          <code>pytesseract 0.3.13</code> + Tesseract binary, <code>pandas 2.3.3</code> /
+          <code>openpyxl 3.1.5</code>, ffmpeg binary, <code>watchdog 6.0</code>.</p>
+      </div>
+      <div class="card">
+        <h3>Service &amp; UI</h3>
+        <p><code>fastapi 0.115</code> / <code>uvicorn 0.34</code>,
+          <code>streamlit 1.45</code>, <code>pywebview 6.2</code>,
+          <code>SQLAlchemy 2.0</code>, <code>presidio-analyzer / anonymizer 2.2.356</code>.</p>
+      </div>
+    </div>
+
+    <p class="stack-note">
+      External binaries required on the host: <b>Ollama</b>, <b>Tesseract OCR</b>,
+      <b>ffmpeg</b>. Everything else installs from <code>requirements.txt</code>.
+    </p>
+  </section>
+
+  <!-- ── 9 ──────────────────────────────────────────────── -->
+  <section id="limits">
+    <div class="sec-head"><span class="num">&sect;9</span><h2>Known limits &amp; next steps</h2></div>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Limit</th><th>Detail</th><th>Direction</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>CPU-only inference</td>
+            <td>Embedding is ~83% of ingestion wall-clock; generation is the slowest step at query time. Concurrency gave no gain on shared cores.</td>
+            <td>A GPU for Ollama is the single biggest speedup. Batch size and concurrency are already env-configurable for that day.</td>
+          </tr>
+          <tr>
+            <td>Vector-drawn diagrams</td>
+            <td>Only embedded raster images are extracted from PDFs. Diagrams drawn as vector paths are not captured as figures.</td>
+            <td>Cluster drawing-operation bounding boxes and render those regions to raster before OCR.</td>
+          </tr>
+          <tr>
+            <td>Table-of-contents noise</td>
+            <td>Dotted TOC lines can rank as high-confidence sources.</td>
+            <td>Filter leader-dot / page-number-only chunks at clean time.</td>
+          </tr>
+          <tr>
+            <td>Escalation is a stub</td>
+            <td>No real ticketing integration; the incident id is synthetic.</td>
+            <td>Replace <code>servicenow_handler</code> with a real connector behind the same interface.</td>
+          </tr>
+          <tr>
+            <td>Single tenant</td>
+            <td>No authentication on the API; one shared conversation store; assumes a trusted local network.</td>
+            <td>Add auth and per-user scoping before any multi-user deployment.</td>
+          </tr>
+          <tr>
+            <td>Transcription quality</td>
+            <td>Accuracy tracks source audio; quiet or noisy recordings degrade badly even at the "medium" model.</td>
+            <td>Surface a confidence signal per transcript; allow a larger model where the host can afford it.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    <span>Infor Support Assistant &middot; Blueprint rev 0.1</span>
+    <span>Proof of concept &mdash; not a production system</span>
+    <span>2026-09-04</span>
+  </footer>
+
+</div>

@@ -6,24 +6,23 @@ import logging
 from rank_bm25 import BM25Okapi
 from config import (
     CHROMA_COLLECTION_PDF,
-    CHROMA_COLLECTION_EXCEL,
-    CHROMA_COLLECTION_SN,
+    CHROMA_COLLECTION_INCIDENTS,
+    CHROMA_COLLECTION_DEFECTS,
+    CHROMA_COLLECTION_VIDEO,
 )
 from vectorstore.chroma_store import chroma_store
 
 logger = logging.getLogger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-BM25_INDEX_DIR  = "./vectorstore/bm25_indexes"
-BM25_PDF_PATH   = os.path.join(BM25_INDEX_DIR, "bm25_pdf.pkl")
-BM25_EXCEL_PATH = os.path.join(BM25_INDEX_DIR, "bm25_excel.pkl")
-BM25_SN_PATH    = os.path.join(BM25_INDEX_DIR, "bm25_servicenow.pkl")
+BM25_INDEX_DIR = "./vectorstore/bm25_indexes"
 
 # Maps collection name → pickle file path
 COLLECTION_INDEX_MAP = {
-    CHROMA_COLLECTION_PDF:   BM25_PDF_PATH,
-    CHROMA_COLLECTION_EXCEL: BM25_EXCEL_PATH,
-    CHROMA_COLLECTION_SN:    BM25_SN_PATH,
+    CHROMA_COLLECTION_PDF:       os.path.join(BM25_INDEX_DIR, "bm25_pdf.pkl"),
+    CHROMA_COLLECTION_INCIDENTS: os.path.join(BM25_INDEX_DIR, "bm25_incidents.pkl"),
+    CHROMA_COLLECTION_DEFECTS:   os.path.join(BM25_INDEX_DIR, "bm25_defects.pkl"),
+    CHROMA_COLLECTION_VIDEO:     os.path.join(BM25_INDEX_DIR, "bm25_video.pkl"),
 }
 
 

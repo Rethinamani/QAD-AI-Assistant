@@ -1,4 +1,0 @@
-number,short_description,description,close_notes,category,state
-INC001,Tax environment error,Customer reported blank tax environment on EDI 850,Resolved by BBC Pricing Team. Updated tax environment configuration.,QAD ERP,Resolved
-INC002,Credit terms missing,Credit term code invalid on incoming 850 transaction,Verified and corrected credit term code in QAD master data.,QAD ERP,Resolved
-INC003,Ship-to address not found,EDI 850 rejected due to missing ship-to address 28000757,Added ship-to address to QAD customer master.,QAD ERP,Resolved
