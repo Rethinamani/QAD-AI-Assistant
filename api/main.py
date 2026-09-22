@@ -107,6 +107,8 @@ async def limit_upload_size(request: Request, call_next):
 class ChatRequest(BaseModel):
     query:      str
     session_id: str | None = None
+    provider:   str | None = None
+    model:      str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -118,6 +120,8 @@ class ChatResponse(BaseModel):
     images:            list[dict] = []
     should_escalate:   bool
     status:            str
+    provider:          str | None = None
+    model:             str | None = None
 
 
 class EscalationRequest(BaseModel):
@@ -212,6 +216,8 @@ def chat_endpoint(request: ChatRequest):
         result = chat(
             query=request.query,
             session_id=request.session_id,
+            provider=request.provider,
+            model=request.model,
         )
 
         conversation_id = result["session_id"]
@@ -248,10 +254,31 @@ def chat_endpoint(request: ChatRequest):
             images=result.get("images", []),
             should_escalate=result["should_escalate"],
             status=result["status"],
+            provider=result.get("provider"),
+            model=result.get("model"),
         )
     except Exception as e:
         logger.error(f"Chat endpoint error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/providers")
+def list_providers():
+    """LLM providers the chat UI can offer, with their available models."""
+    from chatbot.llm_providers import PROVIDERS, list_models
+
+    return {
+        "providers": [
+            {
+                "id":            key,
+                "label":         meta["label"],
+                "available":     meta["available"],
+                "default_model": meta["default_model"],
+                "models":        list_models(key) if meta["available"] else [],
+            }
+            for key, meta in PROVIDERS.items()
+        ]
+    }
 
 
 @app.post("/escalate", response_model=EscalationResponse)

@@ -136,11 +136,31 @@ def api_rename_conversation(conversation_id: str, title: str) -> None:
         pass
 
 
-def api_send_message(query: str, conversation_id: str | None) -> dict:
+def api_list_providers() -> list:
+    try:
+        r = requests.get(f"{API_BASE_URL}/providers", timeout=5)
+        if r.status_code == 200:
+            return r.json()["providers"]
+    except Exception:
+        pass
+    return []
+
+
+def api_send_message(
+    query: str,
+    conversation_id: str | None,
+    provider: str | None = None,
+    model: str | None = None,
+) -> dict:
     try:
         r = requests.post(
             f"{API_BASE_URL}/chat",
-            json={"query": query, "session_id": conversation_id},
+            json={
+                "query":      query,
+                "session_id": conversation_id,
+                "provider":   provider,
+                "model":      model,
+            },
             timeout=180,
         )
         if r.status_code == 200:
@@ -173,6 +193,9 @@ def init_state():
     st.session_state.setdefault("messages", [])
     st.session_state.setdefault("pending_escalation", False)
     st.session_state.setdefault("conversations", api_list_conversations())
+    st.session_state.setdefault("providers", api_list_providers())
+    st.session_state.setdefault("selected_provider", "ollama")
+    st.session_state.setdefault("selected_model", None)
 
 
 def start_new_chat():
@@ -193,9 +216,52 @@ def open_conversation(conversation_id: str):
     )
 
 
+# ── Sidebar: model provider selector ───────────────────────────────────────────
+def render_model_selector():
+    providers = st.session_state.providers
+    if not providers:
+        st.caption("Model provider unavailable — API unreachable.")
+        return
+
+    ids    = [p["id"] for p in providers]
+    labels = [
+        p["label"] + ("" if p["available"] else " (no API key set)")
+        for p in providers
+    ]
+    current = st.session_state.selected_provider
+    index   = ids.index(current) if current in ids else 0
+
+    choice_idx = st.selectbox(
+        "Model provider",
+        options=range(len(providers)),
+        format_func=lambda i: labels[i],
+        index=index,
+        key="provider_select",
+    )
+    chosen = providers[choice_idx]
+    st.session_state.selected_provider = chosen["id"]
+
+    if not chosen["available"]:
+        st.caption(f"⚠️ Set the API key in .env to use {chosen['label']}.")
+
+    models = chosen.get("models") or [chosen["default_model"]]
+    model_current = st.session_state.selected_model
+    model_index   = models.index(model_current) if model_current in models else 0
+
+    st.session_state.selected_model = st.selectbox(
+        "Model",
+        options=models,
+        index=model_index,
+        key="model_select",
+    )
+
+
 # ── Sidebar: conversation list ─────────────────────────────────────────────────
 def render_sidebar():
     with st.sidebar:
+        render_model_selector()
+        st.divider()
+
         if st.button("➕  New chat", use_container_width=True, key="new_chat"):
             start_new_chat()
             st.rerun()
@@ -295,7 +361,12 @@ def render_chat():
 
     with st.chat_message("assistant", avatar="🤖"):
         with st.spinner("Thinking…"):
-            result = api_send_message(prompt, st.session_state.conversation_id)
+            result = api_send_message(
+                prompt,
+                st.session_state.conversation_id,
+                provider=st.session_state.selected_provider,
+                model=st.session_state.selected_model,
+            )
 
     st.session_state.conversation_id = result.get("session_id") \
         or st.session_state.conversation_id

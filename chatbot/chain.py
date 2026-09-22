@@ -4,25 +4,20 @@ import re
 import uuid
 import logging
 from collections import deque
-from ollama import Client
 
 from config import (
-    OLLAMA_BASE_URL,
-    OLLAMA_LLM_MODEL,
     MEMORY_WINDOW_SIZE,
     MAX_RESPONSE_TOKENS,
 )
 from guardrails.input_guardrail import validate_query, get_rejection_message
 from guardrails.output_guardrail import validate_output
 from chatbot import conversation_store
+from chatbot.llm_providers import call_llm, DEFAULT_LLM_PROVIDER, PROVIDERS
 from retrieval.hybrid_search import hybrid_search
 from retrieval.confidence_scorer import score_results, format_source_citation
 from retrieval.hybrid_search import ERROR_NUMBER_PATTERN
 
 logger = logging.getLogger(__name__)
-
-# Ollama client
-ollama_client = Client(host=OLLAMA_BASE_URL)
 
 # ── Session stores ─────────────────────────────────────────────────────────────
 # session_id → deque of {"role": "user"|"assistant", "content": str}
@@ -388,24 +383,19 @@ CONTEXT:
     return messages
 
 
-def _call_llm(messages: list[dict]) -> str:
-    """Call Ollama LLM with the built message list."""
-    response = ollama_client.chat(
-        model=OLLAMA_LLM_MODEL,
-        messages=messages,
-        options={
-            "num_predict": MAX_RESPONSE_TOKENS,
-            "temperature": 0.1,
-            "top_p":       0.9,
-        },
-    )
-    return response["message"]["content"]
-
-
 # ── Main chat function ─────────────────────────────────────────────────────────
-def chat(query: str, session_id: str = None) -> dict:
+def chat(
+    query: str,
+    session_id: str = None,
+    provider: str = None,
+    model: str = None,
+) -> dict:
     """
     Main chat entry point. Runs the full RAG pipeline.
+
+    provider/model select which LLM answers the query (see
+    chatbot.llm_providers.PROVIDERS); both default to the configured
+    DEFAULT_LLM_PROVIDER when omitted.
 
     Processing order:
     0. Pending escalation confirmation check  ← catches yes/no to escalation
@@ -625,8 +615,41 @@ def chat(query: str, session_id: str = None) -> dict:
             confidence_band=score["confidence_band"],
         )
 
-        logger.info(f"[{session_id[:8]}] Calling LLM...")
-        raw_answer = _call_llm(messages)
+        resolved_provider = (provider or DEFAULT_LLM_PROVIDER).lower()
+        resolved_model    = model or PROVIDERS.get(
+            resolved_provider, PROVIDERS[DEFAULT_LLM_PROVIDER]
+        )["default_model"]
+
+        logger.info(
+            f"[{session_id[:8]}] Calling LLM "
+            f"(provider={resolved_provider}, model={resolved_model})..."
+        )
+        try:
+            raw_answer = call_llm(
+                messages,
+                provider=resolved_provider,
+                model=resolved_model,
+                max_tokens=MAX_RESPONSE_TOKENS,
+            )
+        except RuntimeError as e:
+            # Provider selected but not configured (e.g. missing API key).
+            answer = str(e)
+            _add_to_memory(session_id, "user",      clean_query)
+            _add_to_memory(session_id, "assistant", answer)
+            return {
+                "session_id":        session_id,
+                "answer":            answer,
+                "confidence":        0.0,
+                "confidence_band":   "low",
+                "sources":           [],
+                "images":            [],
+                "should_escalate":   False,
+                "escalation_prompt": None,
+                "guardrail_flags":   {"provider_error": True},
+                "status":            "error",
+                "provider":          resolved_provider,
+                "model":             resolved_model,
+            }
 
         # ── Step 7: Output guardrail ───────────────────────────────────────────
         output       = validate_output(raw_answer, results)
@@ -663,6 +686,8 @@ def chat(query: str, session_id: str = None) -> dict:
             "escalation_prompt": None,
             "guardrail_flags":   guardrail_flags,
             "status":            "answered",
+            "provider":          resolved_provider,
+            "model":             resolved_model,
         }
 
     except Exception as e:

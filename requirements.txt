@@ -2,6 +2,11 @@
 langchain==0.3.25
 langchain-community==0.3.23
 langchain-ollama==0.3.3
+ollama==0.6.2
+
+# ── LLM Providers (chat UI model dropdown) ──────────────────
+groq==0.13.1
+openai==1.58.1
 
 # ── Vector Store ───────────────────────────────────────────
 chromadb

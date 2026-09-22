@@ -37,6 +37,19 @@ OLLAMA_BASE_URL     = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_LLM_MODEL    = os.getenv("OLLAMA_LLM_MODEL", "llama3.1:8b")
 OLLAMA_EMBED_MODEL  = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 
+# ── LLM providers (chat completion only — embeddings stay on Ollama) ──
+# Provider used when a request doesn't specify one (e.g. the UI dropdown
+# hasn't loaded yet).
+DEFAULT_LLM_PROVIDER = os.getenv("DEFAULT_LLM_PROVIDER", "ollama")
+
+# Groq (https://console.groq.com/keys) — fast hosted inference.
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+
+# OpenAI / ChatGPT.
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
 # ── Ingestion / embedding throughput ───────────────────────
 # Chunks per Ollama embed request. Larger = fewer HTTP round trips, but
 # nomic-embed-text crashes the Ollama runner above ~128 on CPU.
