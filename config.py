@@ -44,7 +44,7 @@ DEFAULT_LLM_PROVIDER = os.getenv("DEFAULT_LLM_PROVIDER", "ollama")
 
 # Groq (https://console.groq.com/keys) — fast hosted inference.
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL   = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL   = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 
 # OpenAI / ChatGPT.
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")

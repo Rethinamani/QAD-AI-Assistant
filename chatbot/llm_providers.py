@@ -9,6 +9,7 @@ from the UI) asks for. Clients are created lazily so a missing API key for
 a provider the user never selects doesn't break startup.
 """
 
+import re
 import logging
 
 from ollama import Client as OllamaClient
@@ -22,20 +23,24 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
-# A handful of current, popular models per hosted provider. Ollama's list is
-# whatever the local server actually has pulled (see list_models below).
-GROQ_MODELS = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "mixtral-8x7b-32768",
-    "gemma2-9b-it",
-]
-OPENAI_MODELS = [
-    "gpt-4o-mini",
-    "gpt-4o",
-    "gpt-4.1-mini",
-    "gpt-3.5-turbo",
-]
+# Hosted providers' model catalogs change often (models get deprecated,
+# renamed, or added). Rather than hardcode a list that inevitably goes
+# stale, list_models() below queries each provider's own /models endpoint
+# at request time. These are only used if that call fails.
+GROQ_MODELS_FALLBACK   = [GROQ_MODEL]
+OPENAI_MODELS_FALLBACK = [OPENAI_MODEL]
+
+# Non-chat models (audio, TTS, moderation/guard, image, realtime) that
+# show up in a provider's model listing alongside chat models. Filtered
+# out by a substring match on the model id.
+_GROQ_EXCLUDE_KEYWORDS   = ("whisper", "orpheus", "guard", "tts")
+_OPENAI_EXCLUDE_KEYWORDS = (
+    "audio", "image", "realtime", "transcribe", "tts", "search-preview",
+    "instruct", "whisper", "live", "diarize", "codex",
+)
+# Dated/versioned snapshot ids (e.g. "gpt-4.1-2025-04-14", "gpt-3.5-turbo-0125")
+# duplicate an undated alias that's already in the list — drop them.
+_OPENAI_SNAPSHOT_SUFFIX = re.compile(r"-\d{4}-\d{2}-\d{2}$|-\d{3,4}$|-16k$")
 
 # Providers the UI can offer. "available" reflects whether the credentials
 # needed to actually call it are configured.
@@ -120,9 +125,33 @@ def list_models(provider: str) -> list[str]:
             return [OLLAMA_LLM_MODEL]
 
     if provider == "groq":
-        return GROQ_MODELS
+        try:
+            client = _get_groq_client()
+            data   = client.models.list()
+            names  = [
+                m.id for m in data.data
+                if not any(kw in m.id.lower() for kw in _GROQ_EXCLUDE_KEYWORDS)
+            ]
+            return sorted(names) or GROQ_MODELS_FALLBACK
+        except Exception as e:
+            logger.warning(f"Could not list Groq models: {e}")
+            return GROQ_MODELS_FALLBACK
+
     if provider == "openai":
-        return OPENAI_MODELS
+        try:
+            client = _get_openai_client()
+            data   = client.models.list()
+            names  = [
+                m.id for m in data.data
+                if m.id.startswith("gpt-")
+                and not any(kw in m.id.lower() for kw in _OPENAI_EXCLUDE_KEYWORDS)
+                and not _OPENAI_SNAPSHOT_SUFFIX.search(m.id)
+            ]
+            return sorted(names) or OPENAI_MODELS_FALLBACK
+        except Exception as e:
+            logger.warning(f"Could not list OpenAI models: {e}")
+            return OPENAI_MODELS_FALLBACK
+
     return []
 
 
