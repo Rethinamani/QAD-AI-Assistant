@@ -86,6 +86,22 @@ def _get_openai_client():
     return _openai_client
 
 
+def _friendly_api_error(provider_label: str, e: Exception) -> RuntimeError:
+    """Turn a hosted-provider SDK exception into a short, user-facing message."""
+    status = getattr(e, "status_code", None)
+    if status == 401:
+        detail = "invalid or expired API key"
+    elif status == 429:
+        detail = "rate limited or out of quota — check your account's billing/credits"
+    elif status == 404:
+        detail = "model not found or not accessible with this API key"
+    elif status is not None:
+        detail = f"API error (HTTP {status})"
+    else:
+        detail = str(e)
+    return RuntimeError(f"{provider_label} request failed: {detail}")
+
+
 def list_models(provider: str) -> list[str]:
     """Models to offer in the UI for a given provider."""
     provider = (provider or DEFAULT_LLM_PROVIDER).lower()
@@ -141,23 +157,29 @@ def call_llm(
         return response["message"]["content"]
 
     if provider == "groq":
-        client   = _get_groq_client()
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
+        client = _get_groq_client()
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except Exception as e:
+            raise _friendly_api_error("Groq", e) from e
         return response.choices[0].message.content
 
     if provider == "openai":
-        client   = _get_openai_client()
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
+        client = _get_openai_client()
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except Exception as e:
+            raise _friendly_api_error("ChatGPT (OpenAI)", e) from e
         return response.choices[0].message.content
 
     raise ValueError(f"Unsupported LLM provider: {provider}")
